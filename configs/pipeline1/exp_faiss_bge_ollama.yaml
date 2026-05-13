@@ -1,0 +1,3 @@
+extends: "./experiments/exp_001_fixed512_bge_qwen25_7b.yaml"
+experiment:
+  experiment_id: "p1_faiss_bge_ollama_top5"

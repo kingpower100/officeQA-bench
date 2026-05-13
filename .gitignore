@@ -1,0 +1,94 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# Local Python, notebook, and tool state
+.ipynb_checkpoints/
+.tmp*/
+.tmp_pytest*/
+.localappdata/
+.cache/
+
+# VS Code and editor-local files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+log/
+
+# RAG datasets and generated benchmark artifacts
+data/**
+!data/
+!data/README.md
+!data/**/
+!data/**/.gitkeep
+
+# FAISS indexes, embeddings, and vector-store caches
+*.faiss
+*.index
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.parquet
+embeddings/
+indexes/
+vectorstores/
+
+# Experiment outputs and reports
+runs/
+outputs/
+artifacts/
+reports/
+results/
+mlruns/
+wandb/
+
+# Model and dataset caches
+local_models/
+models/
+model_cache/
+hf_cache/
+huggingface/
+.huggingface/
+sentence_transformers/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini

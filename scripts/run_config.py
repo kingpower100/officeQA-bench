@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+import argparse
+
+from src.pipeline1.orchestrator import run_pipeline
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run a single Pipeline 1 config.")
+    parser.add_argument("config")
+    args = parser.parse_args()
+    print(run_pipeline(args.config))
+
+
+if __name__ == "__main__":
+    main()
