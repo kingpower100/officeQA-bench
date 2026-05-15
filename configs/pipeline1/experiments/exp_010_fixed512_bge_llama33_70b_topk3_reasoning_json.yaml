@@ -31,14 +31,14 @@ generation:
     INSUFFICIENT_CONTEXT
 
     Output Format:
-    {
-    "reasoning_steps": [
-    "short reasoning step",
-    "short reasoning step"
-    ],
-    "final_answer": "answer",
-    "formula_used": "formula or N/A"
-    }
+    {{
+      "reasoning_steps": [
+        "short reasoning step",
+        "short reasoning step"
+      ],
+      "final_answer": "answer",
+      "formula_used": "formula or N/A"
+    }}
 
     Retrieved Context:
     {context}
