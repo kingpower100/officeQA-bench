@@ -1,0 +1,11 @@
+extends: "../base_eval.yaml"
+evaluation:
+  eval_run_id: "eval_officeqa_easy_txt_folder_baseline"
+inputs:
+  rag_outputs:
+    - "data/runs/pipeline1/officeqa_easy_txt_folder_baseline/results.jsonl"
+retrieval:
+  ks: [1, 3, 5]
+leaderboard:
+  sort_metric: "mean_recall_at_5"
+  sort_ascending: false
