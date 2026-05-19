@@ -35,7 +35,7 @@ embedding:
   provider: "sentence_transformers"
   model_name: "BAAI/bge-large-en-v1.5"
   normalize_embeddings: true
-  batch_size: 256
+  batch_size: 128
   device: "cuda"
 
 index:
@@ -45,7 +45,7 @@ index:
 retrieval:
   retriever_type: "hybrid_rrf"
   top_k: 5
-  fetch_k: 50
+  fetch_k: 20
   bm25:
     enabled: true
     backend: "elasticsearch"
