@@ -112,11 +112,34 @@ class ElasticsearchBM25Retriever(BaseRetriever):
     def _bulk_index_chunks(self) -> None:
         if not self.chunks:
             return
-        operations = []
-        for chunk in self.chunks:
-            operations.append({"index": {"_index": self.index_name, "_id": chunk.chunk_id}})
-            operations.append(self._chunk_document(chunk))
-        self.client.bulk(operations=operations, refresh=True)
+
+        batch_size = 1000
+
+        for start in range(0, len(self.chunks), batch_size):
+            batch = self.chunks[start:start + batch_size]
+
+            operations = []
+
+            for chunk in batch:
+                operations.append({
+                    "index": {
+                    "_index": self.index_name,
+                    "_id": chunk.chunk_id,
+                }
+                })
+
+                operations.append({
+                "context_id": chunk.context_id,
+                "chunk_id": chunk.chunk_id,
+                "cleaned_context": chunk.text,
+                "file_name": chunk.metadata.get("file_name"),
+                "document_id": chunk.document_id,
+                "metadata": chunk.metadata,
+                })
+
+            self.client.bulk(operations=operations, refresh=False)
+
+        self.client.indices.refresh(index=self.index_name)
 
     def _chunk_document(self, chunk: ChunkRecord) -> dict[str, Any]:
         metadata = dict(chunk.metadata)
