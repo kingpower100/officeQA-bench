@@ -12,7 +12,6 @@ def summarize_by_experiment(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     summaries = []
     for experiment_id, group in sorted(by_experiment.items()):
         metric_cols = _dynamic_metric_columns(group)
-        successful_rows = [row for row in group if not row.get("pipeline1_error")]
         summary = {
             "experiment_id": experiment_id,
             "n_questions": len(group),
@@ -20,7 +19,7 @@ def summarize_by_experiment(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "eval_success_rate": _mean([1.0 if not row.get("evaluation_errors") else 0.0 for row in group]),
         }
         for col in metric_cols:
-            summary[f"mean_{col}"] = _mean([row.get(col) for row in successful_rows if row.get(col) is not None])
+            summary[f"mean_{col}"] = _mean([row.get(col) for row in group if row.get(col) is not None])
         for col in (
             "numeric_accuracy",
             "exact_match",
@@ -28,18 +27,18 @@ def summarize_by_experiment(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "answer_coverage_rate",
             "abstention_rate",
         ):
-            summary[f"mean_{col}"] = _mean([row.get(col) for row in successful_rows if row.get(col) is not None])
+            summary[f"mean_{col}"] = _mean([row.get(col) for row in group if row.get(col) is not None])
         summary["mean_relative_error"] = _mean(
-            [row.get("relative_error") for row in successful_rows if row.get("relative_error") is not None]
+            [row.get("relative_error") for row in group if row.get("relative_error") is not None]
         )
         summary["median_relative_error"] = _median(
-            [row.get("relative_error") for row in successful_rows if row.get("relative_error") is not None]
+            [row.get("relative_error") for row in group if row.get("relative_error") is not None]
         )
         summary["numeric_parse_success_rate"] = _mean(
-            [row.get("numeric_parse_success") for row in successful_rows if row.get("numeric_parse_success") is not None]
+            [row.get("numeric_parse_success") for row in group if row.get("numeric_parse_success") is not None]
         )
         summary["mean_answer_relevancy"] = _mean(
-            [row.get("answer_relevancy_score") for row in successful_rows if row.get("answer_relevancy_score") is not None]
+            [row.get("answer_relevancy_score") for row in group if row.get("answer_relevancy_score") is not None]
         )
         for col in (
             "duplicate_context_rate",
@@ -55,7 +54,7 @@ def summarize_by_experiment(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "total_tokens",
             "estimated_cost",
         ):
-            summary[f"mean_{col}"] = _mean([row.get(col) for row in successful_rows if row.get(col) is not None])
+            summary[f"mean_{col}"] = _mean([row.get(col) for row in group if row.get(col) is not None])
         summaries.append(summary)
     return summaries
 

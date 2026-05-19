@@ -112,6 +112,8 @@ class EvaluationOrchestrator:
         for row in tqdm(rag_rows, desc="Computing metrics", unit="question"):
             errors = []
             qid = str(row.get("question_id", ""))
+            pipeline1_error = row.get("error")
+            pipeline_success = 0.0 if pipeline1_error else 1.0
             retrieved_ids = row.get("retrieved_original_context_ids")
             id_alignment_ok = True
             if "retrieved_original_context_ids" not in row:
@@ -149,6 +151,23 @@ class EvaluationOrchestrator:
             )
             if not cfg.answer_quality.enable_numeric_accuracy:
                 answer_metrics["numeric_accuracy"] = None
+            if pipeline1_error:
+                answer_metrics.update(
+                    {
+                        "numeric_accuracy": 0.0,
+                        "exact_match": 0.0,
+                        "numeric_parse_success": 0.0,
+                        "non_empty_answer_rate": 0.0,
+                        "answer_coverage_rate": 0.0,
+                        "abstention_rate": 0.0,
+                        "answer_relevancy_score": 0.0,
+                        "normalized_generated_answer": "",
+                        "generated_number": None,
+                        "absolute_error": None,
+                        "relative_error": None,
+                        "answer_match_status": "pipeline1_error",
+                    }
+                )
             output = {
                 "question_id": qid,
                 "experiment_id": str(row.get("experiment_id", "")),
@@ -181,7 +200,8 @@ class EvaluationOrchestrator:
                 "relative_error": answer_metrics["relative_error"],
                 "answer_match_status": answer_metrics["answer_match_status"],
                 **compute_efficiency_metrics(row),
-                "pipeline1_error": row.get("error"),
+                "pipeline_success": pipeline_success,
+                "pipeline1_error": pipeline1_error,
                 "evaluation_errors": errors,
             }
             evaluated.append(output)
@@ -389,6 +409,7 @@ def _per_question_fields(ks: list[int]) -> list[str]:
         "output_tokens",
         "total_tokens",
         "estimated_cost",
+        "pipeline_success",
         "pipeline1_error",
         "evaluation_errors",
     ]
@@ -500,7 +521,7 @@ def _eval_manifest(
             "pipeline_success_rate",
             "eval_success_rate",
         ],
-        "summary_behavior": "mean retrieval and numeric metrics exclude rows with pipeline1_error; success rates use all evaluated rows",
+        "summary_behavior": "mean retrieval and answer metrics use all evaluated rows; pipeline1_error rows are retained and score zero for answer correctness",
         "start_timestamp_utc": datetime.fromtimestamp(start_time, timezone.utc).isoformat(),
         "end_timestamp_utc": datetime.fromtimestamp(end_time, timezone.utc).isoformat(),
     }

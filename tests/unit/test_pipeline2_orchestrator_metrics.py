@@ -156,6 +156,46 @@ def test_missing_gold_contexts_fail_evaluation():
         EvaluationOrchestrator()._evaluate_rows(rows, {"q_missing": {"id": "q_missing", "answer": "100"}}, {}, cfg)
 
 
+def test_pipeline1_error_row_is_retained_and_scores_zero_for_answer_metrics():
+    cfg = EvalConfig.model_validate(
+        {
+            "evaluation": {"eval_run_id": "eval"},
+            "inputs": {"rag_outputs": []},
+            "retrieval": {"k": 2, "ks": [1, 2]},
+            "answer_quality": {"enable_numeric_accuracy": True},
+        }
+    )
+    rows = [
+        {
+            "question_id": "q1",
+            "experiment_id": "exp",
+            "generated_answer": "100",
+            "question": "Q?",
+            "retrieved_original_context_ids": [],
+            "error": "generation failed",
+        }
+    ]
+
+    evaluated = EvaluationOrchestrator()._evaluate_rows(
+        rows,
+        {"q1": {"id": "q1", "answer": "100"}},
+        {"q1": ["c1"]},
+        cfg,
+    )
+
+    assert len(evaluated) == 1
+    assert evaluated[0]["pipeline_success"] == 0.0
+    assert evaluated[0]["pipeline1_error"] == "generation failed"
+    assert evaluated[0]["numeric_accuracy"] == 0.0
+    assert evaluated[0]["exact_match"] == 0.0
+    assert evaluated[0]["non_empty_answer_rate"] == 0.0
+    assert evaluated[0]["numeric_parse_success"] == 0.0
+    assert evaluated[0]["answer_match_status"] == "pipeline1_error"
+    assert evaluated[0]["hit_at_1"] == 0.0
+    assert evaluated[0]["recall_at_1"] == 0.0
+    assert evaluated[0]["mrr_at_1"] == 0.0
+
+
 def test_qa_index_supports_uid_only_rows_and_numeric_answer_resolution():
     qa_by_id = _index_by_id(
         [

@@ -205,3 +205,124 @@ answer_quality:
     finally:
         if workspace.exists():
             shutil.rmtree(workspace)
+
+
+def test_pipeline2_summary_counts_pipeline1_failures_in_denominator():
+    workspace = Path(".tmp_test_pipeline2_fair_aggregation").resolve()
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir()
+    try:
+        rag_path = workspace / "rag.jsonl"
+        qa_path = workspace / "qa.jsonl"
+        gold_path = workspace / "gold.jsonl"
+        cfg_path = workspace / "eval.yaml"
+        out_dir = workspace / "out"
+        _write_jsonl(
+            rag_path,
+            [
+                {
+                    "question_id": "q1",
+                    "experiment_id": "exp",
+                    "generated_answer": "100",
+                    "question": "Q?",
+                    "retrieved_original_context_ids": ["c1"],
+                    "error": None,
+                },
+                {
+                    "question_id": "q2",
+                    "experiment_id": "exp",
+                    "generated_answer": "200",
+                    "question": "Q?",
+                    "retrieved_original_context_ids": ["c2"],
+                    "error": None,
+                },
+                {
+                    "question_id": "q3",
+                    "experiment_id": "exp",
+                    "generated_answer": "",
+                    "question": "Q?",
+                    "retrieved_original_context_ids": [],
+                    "error": "generation failed",
+                },
+                {
+                    "question_id": "q4",
+                    "experiment_id": "exp",
+                    "generated_answer": "",
+                    "question": "Q?",
+                    "retrieved_original_context_ids": [],
+                    "error": "timeout",
+                },
+            ],
+        )
+        _write_jsonl(
+            qa_path,
+            [
+                {"id": "q1", "answer": "100"},
+                {"id": "q2", "answer": "200"},
+                {"id": "q3", "answer": "300"},
+                {"id": "q4", "answer": "400"},
+            ],
+        )
+        _write_jsonl(
+            gold_path,
+            [
+                {"id": "q1", "context_id": "c1"},
+                {"id": "q2", "context_id": "c2"},
+                {"id": "q3", "context_id": "c3"},
+                {"id": "q4", "context_id": "c4"},
+            ],
+        )
+        cfg_path.write_text(
+            f"""
+evaluation:
+  eval_run_id: test_fair_eval
+  output_dir: "{out_dir.as_posix()}"
+inputs:
+  rag_outputs:
+    - "{rag_path.as_posix()}"
+  qa_path: "{qa_path.as_posix()}"
+  gold_contexts_path: "{gold_path.as_posix()}"
+retrieval:
+  k: 1
+  ks: [1]
+answer_quality:
+  enable_numeric_accuracy: true
+leaderboard:
+  sort_metric: "mean_numeric_accuracy"
+  sort_ascending: false
+""",
+            encoding="utf-8",
+        )
+
+        run_dir = EvaluationOrchestrator().run(str(cfg_path))
+
+        per_question = [
+            json.loads(line)
+            for line in (run_dir / "per_question.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        summary = (run_dir / "summary_by_experiment.csv").read_text(encoding="utf-8")
+        leaderboard = (run_dir / "leaderboard.csv").read_text(encoding="utf-8")
+        failed = [row for row in per_question if row["pipeline1_error"]]
+        assert len(per_question) == 4
+        assert len(failed) == 2
+        assert all(row["numeric_accuracy"] == 0.0 for row in failed)
+        assert all(row["exact_match"] == 0.0 for row in failed)
+        assert all(row["pipeline_success"] == 0.0 for row in failed)
+        assert all(row["answer_match_status"] == "pipeline1_error" for row in failed)
+        assert "mean_numeric_accuracy" in leaderboard
+
+        import csv
+
+        summary_row = next(csv.DictReader(summary.splitlines()))
+        leaderboard_row = next(csv.DictReader(leaderboard.splitlines()))
+        assert float(summary_row["mean_numeric_accuracy"]) == 0.5
+        assert float(summary_row["mean_exact_match"]) == 0.5
+        assert float(summary_row["mean_recall_at_1"]) == 0.5
+        assert float(summary_row["mean_mrr_at_1"]) == 0.5
+        assert float(summary_row["pipeline_success_rate"]) == 0.5
+        assert float(leaderboard_row["mean_numeric_accuracy"]) == 0.5
+    finally:
+        if workspace.exists():
+            shutil.rmtree(workspace)
