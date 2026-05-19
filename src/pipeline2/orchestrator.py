@@ -43,6 +43,8 @@ class EvaluationOrchestrator:
         qa_path = _resolve(project_root, cfg.inputs.qa_path)
         qa_rows = read_jsonl(qa_path)
         qa_by_id = _index_by_id(qa_rows)
+        _validate_pipeline1_questions_have_qa(rag_rows, qa_by_id)
+        _run_officeqa_smoke_validation(qa_by_id)
         print("[3/6] Loading gold contexts")
         gold_path = _resolve(project_root, cfg.inputs.gold_contexts_path)
         gold_rows = read_jsonl(gold_path)
@@ -187,7 +189,92 @@ class EvaluationOrchestrator:
 
 
 def _index_by_id(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return {str(row.get("id") or row.get("question_id")): row for row in rows}
+    indexed: dict[str, dict[str, Any]] = {}
+    counts = {"uid": 0, "id": 0, "question_id": 0}
+    duplicate_ids: set[str] = set()
+    missing_rows: list[int] = []
+    empty_answer_ids: list[str] = []
+
+    for line_number, row in enumerate(rows, start=1):
+        key_name, raw_id = _resolve_qa_row_id(row)
+        if raw_id is None or str(raw_id).strip() == "":
+            missing_rows.append(line_number)
+            continue
+        qid = str(raw_id)
+        counts[key_name] += 1
+        if qid in indexed:
+            duplicate_ids.add(qid)
+        indexed[qid] = row
+        if not _has_non_empty_answer(row):
+            empty_answer_ids.append(qid)
+
+    if missing_rows:
+        sample = ", ".join(str(item) for item in missing_rows[:20])
+        suffix = "" if len(missing_rows) <= 20 else f", ... ({len(missing_rows)} total)"
+        raise ValueError(f"QA rows are missing uid/id/question_id on line(s): {sample}{suffix}")
+    if duplicate_ids:
+        sample = ", ".join(sorted(duplicate_ids)[:20])
+        suffix = "" if len(duplicate_ids) <= 20 else f", ... ({len(duplicate_ids)} total)"
+        raise ValueError(f"QA rows contain duplicate resolved IDs: {sample}{suffix}")
+    if empty_answer_ids:
+        sample = ", ".join(empty_answer_ids[:20])
+        suffix = "" if len(empty_answer_ids) <= 20 else f", ... ({len(empty_answer_ids)} total)"
+        warnings.warn(
+            f"QA rows have empty answer fields for {len(empty_answer_ids)} ID(s): {sample}{suffix}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    print(
+        "QA validation: "
+        f"total_rows={len(rows)} unique_ids={len(indexed)} "
+        f"indexed_by_uid={counts['uid']} indexed_by_id={counts['id']} "
+        f"indexed_by_question_id={counts['question_id']}"
+    )
+    return indexed
+
+
+def _resolve_qa_row_id(row: dict[str, Any]) -> tuple[str, Any]:
+    for key in ("uid", "id", "question_id"):
+        value = row.get(key)
+        if value is not None and str(value).strip() != "":
+            return key, value
+    return "missing", None
+
+
+def _has_non_empty_answer(row: dict[str, Any]) -> bool:
+    for key in ("ground_truth_answer", "answer", "gold_answer", "expected_answer", "program_answer", "original_answer"):
+        if key in row and row[key] is not None and str(row[key]).strip() != "":
+            return True
+    return False
+
+
+def _validate_pipeline1_questions_have_qa(rag_rows: list[dict[str, Any]], qa_by_id: dict[str, dict[str, Any]]) -> None:
+    missing = [
+        str(row.get("question_id", ""))
+        for row in rag_rows
+        if str(row.get("question_id", "")) not in qa_by_id
+    ]
+    if missing:
+        sample = ", ".join(missing[:20])
+        suffix = "" if len(missing) <= 20 else f", ... ({len(missing)} total)"
+        raise ValueError(f"QA file is missing answers for {len(missing)} Pipeline 1 question_id(s): {sample}{suffix}")
+
+
+def _run_officeqa_smoke_validation(qa_by_id: dict[str, dict[str, Any]]) -> None:
+    if "UID0002" not in qa_by_id:
+        return
+    probe_row = {"question_id": "UID0002", "generated_answer": "507"}
+    gold_answer = resolve_ground_truth_answer(probe_row, qa_by_id)
+    if not gold_answer.strip():
+        raise ValueError("OfficeQA smoke validation failed: UID0002 resolved to an empty gold answer.")
+    metrics = compute_answer_metrics(probe_row["generated_answer"], gold_answer)
+    if metrics["numeric_accuracy"] != 1.0:
+        raise ValueError(
+            "OfficeQA smoke validation failed: generated_answer='507' did not numerically match "
+            f"UID0002 gold answer={gold_answer!r}."
+        )
+    print(f"OfficeQA smoke validation: UID0002 gold_answer={gold_answer!r} numeric_accuracy=1.0")
 
 
 def _resolve(project_root: Path, raw_path: str) -> Path:

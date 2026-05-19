@@ -132,3 +132,76 @@ inputs:
     finally:
         if workspace.exists():
             shutil.rmtree(workspace)
+
+
+def test_pipeline2_evaluates_uid_only_qa_file():
+    workspace = Path(".tmp_test_pipeline2_uid_qa").resolve()
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir()
+    try:
+        rag_path = workspace / "rag.jsonl"
+        qa_path = workspace / "qa.jsonl"
+        gold_path = workspace / "gold.jsonl"
+        cfg_path = workspace / "eval.yaml"
+        out_dir = workspace / "out"
+        _write_jsonl(
+            rag_path,
+            [
+                {
+                    "question_id": "UID0002",
+                    "experiment_id": "officeqa",
+                    "generated_answer": "507",
+                    "question": "Q?",
+                    "retrieved_original_context_ids": ["chunk_a"],
+                    "retrieved_file_names": ["treasury_bulletin_1944_01.txt"],
+                    "retrieved_document_ids": ["treasury_bulletin_1944_01.txt"],
+                    "error": None,
+                }
+            ],
+        )
+        _write_jsonl(
+            qa_path,
+            [
+                {
+                    "uid": "UID0002",
+                    "question": "Q?",
+                    "answer": "507",
+                    "source_docs": "https://example.test/source",
+                    "source_files": "treasury_bulletin_1944_01.txt",
+                    "difficulty": "easy",
+                }
+            ],
+        )
+        _write_jsonl(gold_path, [{"id": "UID0002", "context_id": ["treasury_bulletin_1944_01.txt"]}])
+        cfg_path.write_text(
+            f"""
+evaluation:
+  eval_run_id: test_uid_eval
+  output_dir: "{out_dir.as_posix()}"
+inputs:
+  rag_outputs:
+    - "{rag_path.as_posix()}"
+  qa_path: "{qa_path.as_posix()}"
+  gold_contexts_path: "{gold_path.as_posix()}"
+retrieval:
+  k: 1
+  ks: [1]
+answer_quality:
+  enable_numeric_accuracy: true
+""",
+            encoding="utf-8",
+        )
+
+        run_dir = EvaluationOrchestrator().run(str(cfg_path))
+
+        row = json.loads((run_dir / "per_question.jsonl").read_text(encoding="utf-8").strip())
+        assert row["ground_truth_answer"] == "507"
+        assert row["numeric_accuracy"] == 1.0
+        assert row["exact_match"] == 1.0
+        assert row["answer_match_status"] == "match"
+        assert row["retrieval_eval_ids"] == ["treasury_bulletin_1944_01.txt"]
+        assert row["hit_at_1"] == 1.0
+    finally:
+        if workspace.exists():
+            shutil.rmtree(workspace)

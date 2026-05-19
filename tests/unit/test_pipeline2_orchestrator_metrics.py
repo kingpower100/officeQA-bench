@@ -1,6 +1,6 @@
 import pytest
 
-from src.pipeline2.orchestrator import EvaluationOrchestrator
+from src.pipeline2.orchestrator import EvaluationOrchestrator, _index_by_id, _validate_pipeline1_questions_have_qa
 from src.pipeline2.schemas.eval_config_schema import EvalConfig
 
 
@@ -154,3 +154,99 @@ def test_missing_gold_contexts_fail_evaluation():
 
     with pytest.raises(ValueError, match="Missing 1 question"):
         EvaluationOrchestrator()._evaluate_rows(rows, {"q_missing": {"id": "q_missing", "answer": "100"}}, {}, cfg)
+
+
+def test_qa_index_supports_uid_only_rows_and_numeric_answer_resolution():
+    qa_by_id = _index_by_id(
+        [
+            {
+                "uid": "UID0002",
+                "question": "Q?",
+                "answer": "507",
+                "source_files": "treasury_bulletin_1944_01.txt",
+            }
+        ]
+    )
+    cfg = EvalConfig.model_validate(
+        {
+            "evaluation": {"eval_run_id": "eval"},
+            "inputs": {"rag_outputs": []},
+            "retrieval": {"k": 1, "ks": [1]},
+            "answer_quality": {"enable_numeric_accuracy": True},
+        }
+    )
+    rows = [
+        {
+            "question_id": "UID0002",
+            "experiment_id": "exp",
+            "generated_answer": "507",
+            "question": "Q?",
+            "retrieved_original_context_ids": ["treasury_bulletin_1944_01.txt"],
+        }
+    ]
+
+    evaluated = EvaluationOrchestrator()._evaluate_rows(
+        rows,
+        qa_by_id,
+        {"UID0002": ["treasury_bulletin_1944_01.txt"]},
+        cfg,
+    )
+
+    assert evaluated[0]["ground_truth_answer"] == "507"
+    assert evaluated[0]["numeric_accuracy"] == 1.0
+    assert evaluated[0]["exact_match"] == 1.0
+    assert evaluated[0]["answer_match_status"] == "match"
+
+
+def test_qa_index_still_supports_id_only_rows():
+    qa_by_id = _index_by_id([{"id": "q1", "answer": "100"}])
+
+    assert qa_by_id["q1"]["answer"] == "100"
+
+
+def test_qa_index_still_supports_question_id_only_rows():
+    qa_by_id = _index_by_id([{"question_id": "q1", "answer": "100"}])
+
+    assert qa_by_id["q1"]["answer"] == "100"
+
+
+def test_qa_index_supports_mixed_id_styles():
+    qa_by_id = _index_by_id(
+        [
+            {"uid": "u1", "answer": "1"},
+            {"id": "i1", "answer": "2"},
+            {"question_id": "q1", "answer": "3"},
+        ]
+    )
+
+    assert sorted(qa_by_id) == ["i1", "q1", "u1"]
+
+
+def test_qa_index_prefers_uid_over_other_id_fields():
+    qa_by_id = _index_by_id([{"uid": "u1", "id": "legacy", "question_id": "q1", "answer": "1"}])
+
+    assert sorted(qa_by_id) == ["u1"]
+
+
+def test_qa_index_duplicate_ids_fail():
+    with pytest.raises(ValueError, match="duplicate resolved IDs: q1"):
+        _index_by_id([{"uid": "q1", "answer": "1"}, {"id": "q1", "answer": "2"}])
+
+
+def test_qa_index_missing_ids_fail():
+    with pytest.raises(ValueError, match="missing uid/id/question_id"):
+        _index_by_id([{"question": "Q?", "answer": "1"}])
+
+
+def test_qa_index_warns_on_empty_answer():
+    with pytest.warns(RuntimeWarning, match="empty answer fields"):
+        qa_by_id = _index_by_id([{"uid": "q1", "answer": ""}])
+
+    assert "q1" in qa_by_id
+
+
+def test_missing_pipeline1_question_ids_in_qa_fail():
+    rows = [{"question_id": "q_missing", "generated_answer": "1"}]
+
+    with pytest.raises(ValueError, match="missing answers"):
+        _validate_pipeline1_questions_have_qa(rows, {"q1": {"answer": "1"}})
