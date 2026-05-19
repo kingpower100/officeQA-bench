@@ -66,10 +66,7 @@ class ElasticsearchBM25Retriever(BaseRetriever):
 
     def _ensure_available(self) -> None:
         try:
-            if not self.client.ping():
-                raise ElasticsearchBM25Error(f"Elasticsearch is unavailable at {self.host}")
-        except ElasticsearchBM25Error:
-            raise
+            self.client.info()
         except Exception as ex:
             raise ElasticsearchBM25Error(f"Elasticsearch is unavailable at {self.host}: {ex}") from ex
 
