@@ -2,7 +2,9 @@ from src.pipeline1.chunking.fixed_word_chunker import FixedWordChunker
 from src.pipeline1.generation.prompt_builder import build_prompt
 from src.pipeline1.io.jsonl_reader import JsonlReader
 from src.pipeline1.metadata import normalize_metadata, safe_int
+from src.pipeline1.retrieval.bm25_retriever import BM25Retriever
 from src.pipeline1.retrieval.dense_retriever import DenseRetriever
+from src.pipeline1.retrieval.hybrid_rrf_retriever import HybridRRFRetriever
 from src.pipeline1.retrieval.metadata import extract_query_metadata
 from src.pipeline1.schemas.chunk import ChunkRecord
 from src.pipeline1.schemas.config_schema import MetadataBoostingConfig, MetadataFilteringConfig, PipelineConfig
@@ -122,6 +124,33 @@ def test_metadata_boosting_changes_dense_ranking():
 
     assert [item.chunk_id for item in items] == ["apple", "microsoft"]
     assert items[0].metadata_boost == 0.3
+
+
+def test_hybrid_retriever_can_rank_bm25_only_match():
+    chunks = [_chunk("dense", "Microsoft", 2021), _chunk("lexical", "Apple revenue", 2021)]
+    chunks[0].text = "cash flow statement"
+    chunks[1].text = "apple revenue increased"
+    dense_retriever = DenseRetriever(
+        _Embedder(),
+        _Index([0.9], [0]),
+        chunks,
+        fetch_k=1,
+        metadata_boosting=MetadataBoostingConfig(),
+        metadata_filtering=MetadataFilteringConfig(),
+    )
+    retriever = HybridRRFRetriever(
+        dense_retriever,
+        BM25Retriever(chunks),
+        fetch_k=1,
+        dense_weight=0.0,
+        bm25_weight=1.0,
+    )
+
+    items = retriever.retrieve("apple revenue", top_k=1)
+
+    assert items[0].chunk_id == "lexical"
+    assert items[0].ranking_score_type == "rrf_score"
+    assert items[0].bm25_score is not None
 
 
 def test_metadata_filtering_falls_back_if_no_candidate_matches():

@@ -70,17 +70,37 @@ class MetadataFilteringConfig(StrictConfigModel):
     strict: bool = False
 
 
+class BM25Config(StrictConfigModel):
+    enabled: bool = True
+    backend: Literal["local", "elasticsearch"] = "local"
+    host: str = "http://localhost:9200"
+    index_name: str = "rag_benchmark_chunks"
+    rebuild_index: bool = False
+    allow_fallback: bool = False
+    k1: float = Field(default=1.5, gt=0)
+    b: float = Field(default=0.75, ge=0, le=1)
+
+
+class HybridConfig(StrictConfigModel):
+    rrf_k: int = Field(default=60, gt=0)
+    dense_weight: float = Field(default=1.0, ge=0)
+    bm25_weight: float = Field(default=1.0, ge=0)
+
+
 class RetrievalConfig(StrictConfigModel):
-    retriever_type: Literal["dense"] = "dense"
+    retriever_type: Literal["dense", "bm25", "hybrid_rrf"] = "dense"
     top_k: int = Field(gt=0)
     fetch_k: int = Field(gt=0)
     metadata_boosting: MetadataBoostingConfig = Field(default_factory=MetadataBoostingConfig)
     metadata_filtering: MetadataFilteringConfig = Field(default_factory=MetadataFilteringConfig)
+    bm25: BM25Config = Field(default_factory=BM25Config)
+    hybrid: HybridConfig = Field(default_factory=HybridConfig)
 
 
 class RerankerConfig(StrictConfigModel):
     enabled: bool = False
     model_name: Optional[str] = None
+    final_top_k: Optional[int] = Field(default=None, gt=0)
 
     @field_validator("model_name")
     @classmethod

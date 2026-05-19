@@ -1,9 +1,15 @@
+from src.pipeline1.retrieval.bm25_retriever import BM25Retriever
 from src.pipeline1.retrieval.dense_retriever import DenseRetriever
+from src.pipeline1.retrieval.elasticsearch_bm25_retriever import ElasticsearchBM25Error, ElasticsearchBM25Retriever
+from src.pipeline1.retrieval.hybrid_rrf_retriever import HybridRRFRetriever
 from src.pipeline1.schemas.config_schema import RetrievalConfig
 
 
 def build_retriever(config: RetrievalConfig, embedder, index, chunks):
-    return DenseRetriever(
+    if config.retriever_type == "bm25":
+        return _build_bm25_retriever(config, chunks)
+
+    dense_retriever = DenseRetriever(
         embedder=embedder,
         index=index,
         chunks=chunks,
@@ -11,3 +17,31 @@ def build_retriever(config: RetrievalConfig, embedder, index, chunks):
         metadata_boosting=config.metadata_boosting,
         metadata_filtering=config.metadata_filtering,
     )
+    if config.retriever_type == "hybrid_rrf":
+        return HybridRRFRetriever(
+            dense_retriever=dense_retriever,
+            bm25_retriever=_build_bm25_retriever(config, chunks),
+            fetch_k=config.fetch_k,
+            rrf_k=config.hybrid.rrf_k,
+            dense_weight=config.hybrid.dense_weight,
+            bm25_weight=config.hybrid.bm25_weight,
+        )
+    return dense_retriever
+
+
+def _build_bm25_retriever(config: RetrievalConfig, chunks):
+    if config.bm25.backend == "local":
+        return BM25Retriever(chunks=chunks, k1=config.bm25.k1, b=config.bm25.b)
+    try:
+        return ElasticsearchBM25Retriever(
+            chunks=chunks,
+            host=config.bm25.host,
+            index_name=config.bm25.index_name,
+            k1=config.bm25.k1,
+            b=config.bm25.b,
+            rebuild_index=config.bm25.rebuild_index,
+        )
+    except ElasticsearchBM25Error:
+        if config.bm25.allow_fallback:
+            return BM25Retriever(chunks=chunks, k1=config.bm25.k1, b=config.bm25.b)
+        raise

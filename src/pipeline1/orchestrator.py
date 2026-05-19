@@ -130,6 +130,7 @@ def run_pipeline(config_path: str) -> Path:
 
     retriever = build_retriever(cfg.retrieval, embedder, index, chunks)
     reranker = CrossEncoderReranker(cfg.reranker.model_name) if cfg.reranker.enabled and cfg.reranker.model_name else None
+    final_top_k = cfg.reranker.final_top_k or cfg.retrieval.top_k
     generator = build_generator(cfg.generation)
     writer = ResultWriter(run_dir, save_csv=cfg.runtime.save_csv, logger=logger)
     existing_ids = writer.load_existing_question_ids() if cfg.runtime.resume else set()
@@ -153,10 +154,13 @@ def run_pipeline(config_path: str) -> Path:
                 query.question,
                 retriever,
                 reranker,
-                cfg.retrieval.top_k,
+                final_top_k,
                 cfg.retrieval.fetch_k,
                 max_candidates=len(chunks),
             )
+            raw_dense_retrieved = _last_candidates(retriever, "last_dense_candidates")
+            raw_bm25_retrieved = _last_candidates(retriever, "last_bm25_candidates")
+            fused_retrieved = _last_candidates(retriever, "last_fused_candidates")
             retrieval_time_ms = (time.perf_counter() - retrieval_start) * 1000
             for warning in retrieval_warnings:
                 logger.warning("row_retrieval_warning question_id=%s warning=%s", query.question_id, warning)
@@ -168,10 +172,32 @@ def run_pipeline(config_path: str) -> Path:
                 len([item.score for item in retrieved]),
                 retrieval_time_ms,
             )
-            retrieval_rows.append((query, raw_retrieved, retrieved, retrieval_time_ms, reranker_used, retrieval_warnings))
+            retrieval_rows.append(
+                (
+                    query,
+                    raw_retrieved,
+                    raw_dense_retrieved,
+                    raw_bm25_retrieved,
+                    fused_retrieved,
+                    retrieved,
+                    retrieval_time_ms,
+                    reranker_used,
+                    retrieval_warnings,
+                )
+            )
 
         print("[9/10] Generating answers")
-        for index, (query, raw_retrieved, retrieved, retrieval_time_ms, reranker_used, retrieval_warnings) in enumerate(
+        for index, (
+            query,
+            raw_retrieved,
+            raw_dense_retrieved,
+            raw_bm25_retrieved,
+            fused_retrieved,
+            retrieved,
+            retrieval_time_ms,
+            reranker_used,
+            retrieval_warnings,
+        ) in enumerate(
             tqdm(retrieval_rows, desc="Generating answers", unit="question"), start=1
         ):
             prompt_contexts = dedupe_prompt_contexts(retrieved)
@@ -223,7 +249,10 @@ def run_pipeline(config_path: str) -> Path:
                 generated_answer=answer,
                 retrieved_chunk_ids=[item.chunk_id for item in retrieved],
                 retrieved_original_context_ids=[item.original_context_id for item in retrieved],
+                raw_retrieved_context_ids=[item.chunk_id for item in raw_retrieved],
                 raw_retrieved_original_context_ids=[item.original_context_id for item in raw_retrieved],
+                raw_dense_retrieved_context_ids=[item.chunk_id for item in raw_dense_retrieved],
+                raw_bm25_retrieved_context_ids=[item.chunk_id for item in raw_bm25_retrieved],
                 retrieved_context_ids=[item.chunk_id for item in retrieved],
                 retrieved_document_ids=[item.metadata.get("doc_id") or item.metadata.get("document_id") or item.original_context_id for item in retrieved],
                 raw_retrieved_document_ids=[
@@ -240,8 +269,13 @@ def run_pipeline(config_path: str) -> Path:
                 retrieved_context_texts=[item.text for item in retrieved],
                 retrieval_scores=[item.score for item in retrieved],
                 dense_scores=[item.dense_score for item in retrieved],
+                bm25_scores=[item.bm25_score for item in retrieved],
+                rrf_scores=[item.rrf_score for item in retrieved],
                 rerank_scores=[item.rerank_score for item in retrieved],
-                ranking_score_type="rerank_score" if reranker_used else "dense_score",
+                ranking_score_type="rerank_score" if reranker_used else (
+                    retrieved[0].ranking_score_type if retrieved else cfg.retrieval.retriever_type
+                ),
+                retrieval_mode=cfg.retrieval.retriever_type,
                 retrieved_unique_count=len({item.chunk_id for item in retrieved}),
                 raw_retrieved_unique_count=len({item.chunk_id for item in raw_retrieved}),
                 raw_duplicate_rate=_duplicate_rate([item.chunk_id for item in raw_retrieved]),
@@ -254,7 +288,7 @@ def run_pipeline(config_path: str) -> Path:
                     "file_names": sorted(query_metadata.file_names),
                     "source_datasets": sorted(query_metadata.source_datasets),
                 },
-                top_k=cfg.retrieval.top_k,
+                top_k=final_top_k,
                 chunking_strategy=cfg.chunking.strategy,
                 chunk_size=cfg.chunking.chunk_size,
                 chunk_overlap=cfg.chunking.chunk_overlap,
@@ -385,16 +419,14 @@ def retrieve_top_k_unique_contexts(
     fetch_k: int,
     max_candidates: int,
 ) -> tuple[list, list, list[str], bool]:
-    candidate_k = max(fetch_k, top_k)
+    candidate_k = max(fetch_k if reranker is not None else top_k, top_k)
     raw_retrieved = []
     retrieved = []
     reranker_used = reranker is not None
     while True:
-        dense_candidates = retriever.retrieve(question, candidate_k)
-        raw_retrieved = (
-            reranker.rerank(question, dense_candidates, candidate_k) if reranker is not None else dense_candidates
-        )
-        retrieved = dedupe_retrieval_by_chunk_id(raw_retrieved, top_k)
+        raw_retrieved = retriever.retrieve(question, candidate_k)
+        ranked = reranker.rerank(question, raw_retrieved, top_k) if reranker is not None else raw_retrieved
+        retrieved = dedupe_retrieval_by_chunk_id(ranked, top_k)
         if len(retrieved) >= top_k or candidate_k >= max_candidates:
             break
         candidate_k = min(max_candidates, max(candidate_k + 1, candidate_k * 2))
@@ -404,6 +436,11 @@ def retrieve_top_k_unique_contexts(
             f"Only {len(retrieved)} unique chunks were available after deduplication; requested top_k={top_k}."
         )
     return raw_retrieved, retrieved, warnings, reranker_used
+
+
+def _last_candidates(retriever, attribute: str) -> list:
+    value = getattr(retriever, attribute, None)
+    return list(value) if isinstance(value, list) else []
 
 
 def _log_run_info(

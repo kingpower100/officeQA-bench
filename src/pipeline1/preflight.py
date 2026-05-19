@@ -19,9 +19,10 @@ def run_preflight_checks(cfg, base_dir: Path | None = None) -> list[str]:
         errors.append(f"questions_path is missing or not a file: {questions_path}")
     elif questions_path.stat().st_size == 0:
         errors.append(f"questions_path is empty: {questions_path}")
-    if cfg.reranker.enabled and cfg.retrieval.fetch_k <= cfg.retrieval.top_k:
+    final_top_k = cfg.reranker.final_top_k or cfg.retrieval.top_k
+    if cfg.reranker.enabled and cfg.retrieval.fetch_k <= final_top_k:
         errors.append(
-            f"retrieval.fetch_k ({cfg.retrieval.fetch_k}) must be > retrieval.top_k ({cfg.retrieval.top_k}) "
+            f"retrieval.fetch_k ({cfg.retrieval.fetch_k}) must be > final top_k ({final_top_k}) "
             "when reranker.enabled=true"
         )
     elif not cfg.reranker.enabled and cfg.retrieval.fetch_k < cfg.retrieval.top_k:

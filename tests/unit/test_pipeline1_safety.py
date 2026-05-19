@@ -119,7 +119,7 @@ def test_fetch_k_must_exceed_top_k_when_reranking(tmp_path, monkeypatch):
 
     errors = run_preflight_checks(_cfg(True, top_k=5, fetch_k=5), tmp_path)
 
-    assert any("must be > retrieval.top_k" in error for error in errors)
+    assert any("must be > final top_k" in error for error in errors)
 
 
 def test_fetch_k_below_top_k_fails_without_reranking(tmp_path, monkeypatch):

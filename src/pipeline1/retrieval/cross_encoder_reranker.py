@@ -19,6 +19,7 @@ class CrossEncoderReranker:
                     "score": float(score) + item.metadata_boost,
                     "rerank_score": float(score),
                     "ranking_score_type": "rerank_score_plus_metadata" if item.metadata_boost else "rerank_score",
+                    "retrieval_source": item.retrieval_source,
                 }
             )
             for item, score in zip(items, scores)

@@ -22,6 +22,7 @@ class DenseRetriever(BaseRetriever):
         self.fetch_k = fetch_k
         self.metadata_boosting = metadata_boosting
         self.metadata_filtering = metadata_filtering
+        self.last_dense_candidates: list[RetrievalItem] = []
 
     def retrieve(self, question: str, top_k: int) -> list[RetrievalItem]:
         query_vec = self.embedder.encode_query(question)
@@ -58,7 +59,9 @@ class DenseRetriever(BaseRetriever):
             ))
         if self.metadata_filtering.enabled:
             items = filter_candidates_by_metadata(items, query_metadata, self.metadata_filtering.strict)
-        return sorted(items, key=lambda item: item.score, reverse=True)[:top_k]
+        ranked = sorted(items, key=lambda item: item.score, reverse=True)[:top_k]
+        self.last_dense_candidates = ranked
+        return ranked
 
     def extract_query_metadata(self, question: str):
         return extract_query_metadata(question, (chunk.metadata for chunk in self.chunks))

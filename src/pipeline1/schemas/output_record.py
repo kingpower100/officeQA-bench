@@ -11,7 +11,10 @@ class OutputRecord(BaseModel):
     generated_answer: str
     retrieved_chunk_ids: list[str]
     retrieved_original_context_ids: list[str]
+    raw_retrieved_context_ids: list[str] = Field(default_factory=list)
     raw_retrieved_original_context_ids: list[str] = Field(default_factory=list)
+    raw_dense_retrieved_context_ids: list[str] = Field(default_factory=list)
+    raw_bm25_retrieved_context_ids: list[str] = Field(default_factory=list)
     retrieved_context_ids: list[str] = Field(default_factory=list)
     retrieved_document_ids: list[str | None] = Field(default_factory=list)
     raw_retrieved_document_ids: list[str | None] = Field(default_factory=list)
@@ -22,9 +25,12 @@ class OutputRecord(BaseModel):
     retrieved_chunk_metadata: list[dict] = Field(default_factory=list)
     retrieved_context_texts: list[str]
     retrieval_scores: list[float]
-    dense_scores: list[float] = Field(default_factory=list)
+    dense_scores: list[float | None] = Field(default_factory=list)
+    bm25_scores: list[float | None] = Field(default_factory=list)
+    rrf_scores: list[float | None] = Field(default_factory=list)
     rerank_scores: list[float | None] = Field(default_factory=list)
     ranking_score_type: str = "dense_score"
+    retrieval_mode: str = "dense"
     retrieved_unique_count: int = 0
     raw_retrieved_unique_count: int = 0
     raw_duplicate_rate: float | None = None
@@ -56,14 +62,22 @@ class OutputRecord(BaseModel):
             self.retrieved_chunk_texts = list(self.retrieved_context_texts)
         if not self.retrieved_chunk_units:
             self.retrieved_chunk_units = [None] * len(self.retrieved_chunk_ids)
-        if not self.dense_scores:
+        if not self.dense_scores and self.retrieval_mode == "dense":
             self.dense_scores = list(self.retrieval_scores)
+        elif not self.dense_scores:
+            self.dense_scores = [None] * len(self.retrieved_chunk_ids)
+        if not self.bm25_scores:
+            self.bm25_scores = [None] * len(self.retrieved_chunk_ids)
+        if not self.rrf_scores:
+            self.rrf_scores = [None] * len(self.retrieved_chunk_ids)
         if not self.rerank_scores:
             self.rerank_scores = [None] * len(self.retrieved_chunk_ids)
         if not self.retrieved_chunk_metadata:
             self.retrieved_chunk_metadata = [{} for _ in self.retrieved_chunk_ids]
         if not self.retrieved_context_ids:
             self.retrieved_context_ids = list(self.retrieved_chunk_ids)
+        if not self.raw_retrieved_context_ids:
+            self.raw_retrieved_context_ids = list(self.raw_retrieved_original_context_ids)
         if not self.retrieved_document_ids:
             self.retrieved_document_ids = list(self.retrieved_original_context_ids)
         if not self.retrieved_file_names:
@@ -91,6 +105,8 @@ class OutputRecord(BaseModel):
             == len(self.retrieved_context_texts)
             == len(self.retrieval_scores)
             == len(self.dense_scores)
+            == len(self.bm25_scores)
+            == len(self.rrf_scores)
             == len(self.rerank_scores)
         ):
             raise ValueError("retrieval arrays must align")
