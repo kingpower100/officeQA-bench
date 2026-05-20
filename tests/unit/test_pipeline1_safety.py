@@ -1,7 +1,13 @@
 import pytest
+import sys
+import types
+
+import pytest
+import torch
 
 from src.pipeline1.chunking.fixed_token_chunker import FixedTokenChunker
 from src.pipeline1.config_loader import load_pipeline_config_payload
+from src.pipeline1.embedding.bge_encoder import BGEEncoder
 from src.pipeline1.io.jsonl_reader import JsonlReader
 from src.pipeline1.metadata import parse_treasury_filename
 from src.pipeline1.orchestrator import _chunker_versions
@@ -158,6 +164,101 @@ def test_fetch_k_below_top_k_fails_without_reranking(tmp_path, monkeypatch):
     errors = run_preflight_checks(_cfg(False, top_k=5, fetch_k=4), tmp_path)
 
     assert any("must be >= retrieval.top_k" in error for error in errors)
+
+
+def test_require_cuda_true_without_cuda_fails_preflight(tmp_path, monkeypatch):
+    (tmp_path / "documents.jsonl").write_text('{"context_id":"c1","cleaned_context":"text"}\n', encoding="utf-8")
+    (tmp_path / "questions.jsonl").write_text('{"question_id":"q1","question":"Q?"}\n', encoding="utf-8")
+    cfg = _cfg(False, top_k=1, fetch_k=2)
+    cfg.embedding.require_cuda = True
+    monkeypatch.setenv("PIPELINE1_SKIP_OLLAMA_PREFLIGHT", "1")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    errors = run_preflight_checks(cfg, tmp_path)
+
+    assert any("embedding.device is cuda or embedding.require_cuda=true" in error for error in errors)
+
+
+def test_bge_encoder_propagates_requested_device(monkeypatch):
+    captured = {}
+
+    class FakeTensor:
+        def __init__(self, device: str) -> None:
+            self.device = torch.device(device)
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name: str, device: str = "cpu") -> None:
+            captured["model_name"] = model_name
+            captured["device"] = device
+            self.device = torch.device("cuda:0" if str(device).startswith("cuda") else "cpu")
+            self._target_device = self.device
+
+        def encode(self, texts, convert_to_tensor=False, show_progress_bar=False, batch_size=None, normalize_embeddings=False):
+            if convert_to_tensor:
+                return FakeTensor("cuda:0" if str(captured["device"]).startswith("cuda") else "cpu")
+            return __import__("numpy").zeros((len(texts), 3), dtype="float32")
+
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.SentenceTransformer = FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+
+    encoder = BGEEncoder("fake-model", device="cuda", require_cuda=False)
+
+    assert captured["device"] == "cuda"
+    assert str(encoder.requested_device) == "cuda"
+    assert str(encoder.runtime_device).startswith("cuda")
+    assert str(encoder.embedding_tensor_device).startswith("cuda")
+
+
+def test_reranker_propagates_requested_device(monkeypatch):
+    from src.pipeline1.retrieval.cross_encoder_reranker import CrossEncoderReranker
+    from src.pipeline1.schemas.retrieval import RetrievalItem
+
+    captured = {}
+
+    class FakeCrossEncoder:
+        def __init__(self, model_name: str, device: str = "cpu") -> None:
+            captured["model_name"] = model_name
+            captured["device"] = device
+            self.device = torch.device("cuda:0" if str(device).startswith("cuda") else "cpu")
+            self._target_device = self.device
+
+        def predict(self, pairs):
+            return [0.5 for _ in pairs]
+
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.CrossEncoder = FakeCrossEncoder
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+
+    reranker = CrossEncoderReranker("fake-reranker", device="cuda")
+    items = [RetrievalItem(chunk_id="c1", original_context_id="c1", text="text", score=0.1, chunk_unit=None, metadata={})]
+    ranked = reranker.rerank("question", items, 1)
+
+    assert captured["device"] == "cuda"
+    assert str(reranker.requested_device) == "cuda"
+    assert str(reranker.runtime_device).startswith("cuda")
+    assert ranked[0].chunk_id == "c1"
+
+
+def test_cuda_requested_but_cpu_runtime_warns(monkeypatch):
+    class FakeSentenceTransformer:
+        def __init__(self, model_name: str, device: str = "cpu") -> None:
+            self.device = torch.device("cpu")
+            self._target_device = self.device
+
+        def encode(self, texts, convert_to_tensor=False, show_progress_bar=False, batch_size=None, normalize_embeddings=False):
+            if convert_to_tensor:
+                return type("FakeTensor", (), {"device": torch.device("cpu")})()
+            return __import__("numpy").zeros((len(texts), 3), dtype="float32")
+
+    fake_module = types.ModuleType("sentence_transformers")
+    fake_module.SentenceTransformer = FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+
+    with pytest.warns(RuntimeWarning, match="requested device='cuda'"):
+        encoder = BGEEncoder("fake-model", device="cuda", require_cuda=False)
+
+    assert str(encoder.runtime_device) == "cpu"
 
 
 def test_experiment_id_must_match_experiment_config_filename(tmp_path):

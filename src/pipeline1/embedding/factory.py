@@ -3,4 +3,4 @@ from src.pipeline1.schemas.config_schema import EmbeddingConfig
 
 
 def build_embedder(config: EmbeddingConfig):
-    return BGEEncoder(config.model_name, config.normalize_embeddings, config.batch_size, config.device)
+    return BGEEncoder(config.model_name, config.normalize_embeddings, config.batch_size, config.device, config.require_cuda)

@@ -35,14 +35,26 @@ def run_preflight_checks(cfg, base_dir: Path | None = None) -> list[str]:
         errors.append(f"chunking.chunk_overlap ({cfg.chunking.chunk_overlap}) must be < chunking.chunk_size ({cfg.chunking.chunk_size})")
     if cfg.index.metric == "cosine" and not cfg.embedding.normalize_embeddings:
         errors.append("embedding.normalize_embeddings must be true when index.metric is cosine")
-    if cfg.embedding.device == "cuda":
+    if cfg.embedding.require_cuda or cfg.embedding.device == "cuda":
+        try:
+            import torch
+
+            if cfg.embedding.require_cuda and cfg.embedding.device != "cuda":
+                errors.append("embedding.require_cuda=true requires embedding.device to be set to cuda")
+            if not torch.cuda.is_available():
+                errors.append("embedding.device is cuda or embedding.require_cuda=true but CUDA is not available to torch")
+            elif cfg.embedding.require_cuda and torch.cuda.device_count() == 0:
+                errors.append("embedding.require_cuda=true but torch reports zero CUDA devices")
+        except Exception as ex:
+            errors.append(f"embedding.cuda requirements could not be checked: {ex}")
+    if cfg.reranker.enabled and cfg.reranker.device == "cuda":
         try:
             import torch
 
             if not torch.cuda.is_available():
-                errors.append("embedding.device is cuda but CUDA is not available to torch")
+                errors.append("reranker.device is cuda but CUDA is not available to torch")
         except Exception as ex:
-            errors.append(f"embedding.device is cuda but torch/CUDA could not be checked: {ex}")
+            errors.append(f"reranker.device is cuda but torch/CUDA could not be checked: {ex}")
     if questions_path.exists() and questions_path.is_file():
         errors.extend(_validate_question_ids(questions_path, cfg.data.question_id_field))
         errors.extend(_validate_safe_query_file(questions_path, cfg.data.allow_unsafe_query_fields))

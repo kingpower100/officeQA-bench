@@ -40,6 +40,7 @@ def run_pipeline(config_path: str) -> Path:
     set_seed(cfg.experiment.random_seed)
     project_root = _project_root()
     run_dir = project_root / cfg.experiment.output_dir / cfg.experiment.experiment_id
+    _print_cuda_startup_state(cfg)
 
     if run_dir.exists() and cfg.runtime.overwrite:
         for name in ("results.jsonl", "results.csv", "run_manifest.json", "logs.txt", "pipeline1.log"):
@@ -86,6 +87,7 @@ def run_pipeline(config_path: str) -> Path:
         logger.info("Loaded cached chunks: %s", chunks_path)
 
     embedder = build_embedder(cfg.embedding)
+    _print_embedding_runtime_state(cfg, embedder)
     embeddings_key = stable_hash_dict(
         {
             "chunks_key": chunks_key,
@@ -131,7 +133,12 @@ def run_pipeline(config_path: str) -> Path:
     _log_run_info(logger, cfg, docs_count=len(docs), chunk_count=len(chunks), question_count=len(queries), questions_path=questions_path)
 
     retriever = build_retriever(cfg.retrieval, embedder, index, chunks)
-    reranker = CrossEncoderReranker(cfg.reranker.model_name) if cfg.reranker.enabled and cfg.reranker.model_name else None
+    reranker = (
+        CrossEncoderReranker(cfg.reranker.model_name, cfg.reranker.device)
+        if cfg.reranker.enabled and cfg.reranker.model_name
+        else None
+    )
+    _print_reranker_runtime_state(cfg, reranker)
     final_top_k = cfg.reranker.final_top_k or cfg.retrieval.top_k
     generator = build_generator(cfg.generation)
     writer = ResultWriter(run_dir, save_csv=cfg.runtime.save_csv, logger=logger)
@@ -495,6 +502,57 @@ def _log_run_info(
     logger.info("documents_source_type=%s", cfg.data.documents_source_type)
     logger.info("documents_file_glob=%s", cfg.data.documents_file_glob)
     logger.info("question_input_path=%s", questions_path)
+
+
+def _print_cuda_startup_state(cfg: PipelineConfig) -> None:
+    try:
+        import torch
+
+        cuda_available = torch.cuda.is_available()
+        cuda_count = torch.cuda.device_count()
+        gpu_name = torch.cuda.get_device_name(0) if cuda_available and cuda_count > 0 else "<none>"
+        current_device = f"cuda:{torch.cuda.current_device()}" if cuda_available and cuda_count > 0 else "cpu"
+    except Exception as ex:
+        cuda_available = False
+        cuda_count = 0
+        gpu_name = f"<unavailable: {ex}>"
+        current_device = "cpu"
+
+    print(
+        "[startup] "
+        f"torch_cuda_available={cuda_available} "
+        f"cuda_device_count={cuda_count} "
+        f"gpu_name={gpu_name} "
+        f"current_torch_device={current_device} "
+        f"embedding_requested_device={cfg.embedding.device} "
+        f"embedding_require_cuda={cfg.embedding.require_cuda} "
+        f"reranker_requested_device={cfg.reranker.device}"
+    )
+
+
+def _print_embedding_runtime_state(cfg: PipelineConfig, embedder) -> None:
+    runtime_device = getattr(embedder, "runtime_device", "<unknown>")
+    tensor_device = getattr(embedder, "embedding_tensor_device", "<unknown>")
+    requested_device = getattr(embedder, "requested_device", cfg.embedding.device)
+    print(
+        "[startup] "
+        f"embedding_device={requested_device} "
+        f"embedding_runtime_device={runtime_device} "
+        f"embedding_tensor_device={tensor_device}"
+    )
+
+
+def _print_reranker_runtime_state(cfg: PipelineConfig, reranker) -> None:
+    if reranker is None:
+        print("[startup] reranker=disabled")
+        return
+    runtime_device = getattr(reranker, "runtime_device", "<unknown>")
+    requested_device = getattr(reranker, "requested_device", cfg.reranker.device)
+    print(
+        "[startup] "
+        f"reranker_device={requested_device} "
+        f"reranker_runtime_device={runtime_device}"
+    )
 
 
 def _documents_fingerprint(cfg: PipelineConfig, docs_path: Path) -> str:

@@ -25,8 +25,9 @@ embedding:
   provider: "sentence_transformers"
   model_name: "BAAI/bge-small-en-v1.5"
   normalize_embeddings: true
-  batch_size: 256 
+  batch_size: 32
   device: "cuda"
+  require_cuda: false
 
 index:
   type: "faiss"
@@ -49,6 +50,7 @@ retrieval:
 reranker:
   enabled: false
   model_name: null
+  device: "cpu"
 
 generation:
   provider: "ollama"

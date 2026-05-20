@@ -50,6 +50,7 @@ class EmbeddingConfig(StrictConfigModel):
     normalize_embeddings: bool = True
     batch_size: int = 32
     device: str = "cpu"
+    require_cuda: bool = False
 
 
 class IndexConfig(StrictConfigModel):
@@ -100,6 +101,7 @@ class RetrievalConfig(StrictConfigModel):
 class RerankerConfig(StrictConfigModel):
     enabled: bool = False
     model_name: Optional[str] = None
+    device: str = "cpu"
     final_top_k: Optional[int] = Field(default=None, gt=0)
 
     @field_validator("model_name")

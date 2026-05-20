@@ -31,8 +31,9 @@ embedding:
   provider: "sentence_transformers"
   model_name: "BAAI/bge-small-en-v1.5"
   normalize_embeddings: true
-  batch_size: 256
+  batch_size: 128
   device: "cuda"
+  require_cuda: true
 
 index:
   type: "faiss"
@@ -64,6 +65,7 @@ retrieval:
 reranker:
   enabled: true
   model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  device: "cuda"
   final_top_k: 5
 
 generation:

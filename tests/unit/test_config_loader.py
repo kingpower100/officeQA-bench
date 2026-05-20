@@ -15,6 +15,9 @@ def test_pipeline_configs_load_current_examples():
     assert p1.retrieval.top_k == 10
     assert p1.generation.model_name == "qwen2.5:7b"
     assert p1.runtime.overwrite is False
+    assert p1.embedding.device == "cuda"
+    assert p1.embedding.require_cuda is True
+    assert p1.reranker.device == "cuda"
     assert p2.evaluation.eval_run_id == "eval_officeqa_treasury_hybrid_rrf_bge_small_qwen25_7b"
     assert p2.evaluation.retrieval_eval_field == "retrieved_file_names"
     assert p2.evaluation.max_generation_failure_rate == 0.05
