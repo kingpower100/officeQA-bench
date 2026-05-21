@@ -23,6 +23,7 @@ class EvaluationOrchestrator:
         cfg = EvalConfig.from_yaml(config_path)
         project_root = Path(__file__).resolve().parents[2]
         run_dir = project_root / cfg.evaluation.output_dir / cfg.evaluation.eval_run_id
+        print(f"Resolved eval output dir: {run_dir}")
         if run_dir.exists() and not cfg.runtime.overwrite:
             raise FileExistsError(f"Evaluation run already exists and overwrite=false: {run_dir}")
         if run_dir.exists() and cfg.runtime.overwrite:
@@ -46,9 +47,13 @@ class EvaluationOrchestrator:
         for rag_path in cfg.inputs.rag_outputs:
             resolved = _resolve(project_root, rag_path)
             resolved_rag_paths.append(resolved)
-            rag_rows.extend(read_jsonl(resolved))
+            print(f"Pipeline 1 results path: {resolved}")
+            rows = read_jsonl(resolved)
+            print(f"Pipeline 1 results rows: {len(rows)}")
+            rag_rows.extend(rows)
         print("[2/6] Loading QA gold answers")
         qa_path = _resolve(project_root, cfg.inputs.qa_path)
+        print(f"QA file: {qa_path}")
         qa_rows = read_jsonl(qa_path)
         qa_by_id = _index_by_id(qa_rows, require_answer=not cfg.evaluation.retrieval_only)
         _validate_pipeline1_questions_have_qa(rag_rows, qa_by_id)
@@ -56,11 +61,17 @@ class EvaluationOrchestrator:
             _run_officeqa_smoke_validation(qa_by_id)
         print("[3/6] Loading gold contexts")
         gold_path = _resolve(project_root, cfg.inputs.gold_contexts_path)
+        print(f"Gold contexts file: {gold_path}")
         gold_rows = read_jsonl(gold_path) if gold_path.exists() else []
         gold_by_id = _merge_gold_with_qa_fallback(_gold_by_question(gold_rows), qa_by_id)
+        input_diagnostics = build_eval_diagnostics(rag_rows, qa_rows, gold_rows, qa_by_id, gold_by_id, cfg)
+        _print_eval_diagnostics(input_diagnostics)
+        _validate_eval_diagnostics(input_diagnostics, cfg)
 
         print("[4/6] Computing automatic metrics")
         per_question = self._evaluate_rows(rag_rows, qa_by_id, gold_by_id, cfg)
+        if not per_question:
+            raise ValueError("Pipeline 2 evaluated zero rows.")
         print("[5/6] Aggregating summaries")
         summary = summarize_by_experiment(per_question)
         run_validity = _run_validity_by_experiment(per_question, cfg.evaluation.max_generation_failure_rate)
@@ -99,6 +110,7 @@ class EvaluationOrchestrator:
                     leaderboard,
                     difficulty_summary,
                     run_validity,
+                    input_diagnostics,
                     start_time,
                     time.time(),
                 ),
@@ -316,6 +328,89 @@ def _validate_pipeline1_questions_have_qa(rag_rows: list[dict[str, Any]], qa_by_
         sample = ", ".join(missing[:20])
         suffix = "" if len(missing) <= 20 else f", ... ({len(missing)} total)"
         raise ValueError(f"QA file is missing answers for {len(missing)} Pipeline 1 question_id(s): {sample}{suffix}")
+
+
+def build_eval_diagnostics(
+    rag_rows: list[dict[str, Any]],
+    qa_rows: list[dict[str, Any]],
+    gold_rows: list[dict[str, Any]],
+    qa_by_id: dict[str, dict[str, Any]],
+    gold_by_id: dict[str, list[str]],
+    cfg: EvalConfig,
+) -> dict[str, Any]:
+    rag_ids = [str(row.get("question_id", "")) for row in rag_rows if str(row.get("question_id", "")).strip()]
+    qa_ids = list(qa_by_id)
+    gold_ids = [qid for qid, ids in gold_by_id.items() if ids]
+    rag_set = set(rag_ids)
+    qa_set = set(qa_ids)
+    gold_set = set(gold_ids)
+    retrieved_field = cfg.evaluation.retrieval_eval_field
+    generated_present = [row for row in rag_rows if str(row.get("generated_answer", "")).strip()]
+    retrieved_present = [
+        row
+        for row in rag_rows
+        if isinstance(row.get(retrieved_field), list) and any(str(item).strip() for item in row.get(retrieved_field) or [])
+    ]
+    missing_generated_ids = [str(row.get("question_id", "")) for row in rag_rows if not str(row.get("generated_answer", "")).strip()]
+    missing_retrieved_ids = [
+        str(row.get("question_id", ""))
+        for row in rag_rows
+        if not (isinstance(row.get(retrieved_field), list) and any(str(item).strip() for item in row.get(retrieved_field) or []))
+    ]
+    return {
+        "pipeline1_result_rows": len(rag_rows),
+        "qa_rows": len(qa_rows),
+        "gold_context_rows": len(gold_rows),
+        "qa_indexed_rows": len(qa_by_id),
+        "gold_indexed_rows": len(gold_set),
+        "qa_intersection_size": len(rag_set & qa_set),
+        "gold_intersection_size": len(rag_set & gold_set),
+        "evaluated_rows_expected": len(rag_rows),
+        "skipped_rows": 0,
+        "missing_generated_answers": len(missing_generated_ids),
+        "missing_retrieved_field_values": len(missing_retrieved_ids),
+        "generated_answer_coverage": len(generated_present) / len(rag_rows) if rag_rows else 0.0,
+        "retrieved_field": retrieved_field,
+        "retrieved_field_coverage": len(retrieved_present) / len(rag_rows) if rag_rows else 0.0,
+        "first_5_pipeline1_question_ids": rag_ids[:5],
+        "first_5_qa_question_ids": qa_ids[:5],
+        "first_5_gold_question_ids": gold_ids[:5],
+        "missing_in_qa_examples": sorted(rag_set - qa_set)[:5],
+        "missing_in_gold_examples": sorted(rag_set - gold_set)[:5],
+        "missing_generated_answer_examples": missing_generated_ids[:5],
+        "missing_retrieved_field_examples": missing_retrieved_ids[:5],
+    }
+
+
+def _print_eval_diagnostics(diagnostics: dict[str, Any]) -> None:
+    print(
+        "Evaluation input diagnostics: "
+        f"pipeline1_rows={diagnostics['pipeline1_result_rows']} "
+        f"qa_rows={diagnostics['qa_rows']} "
+        f"gold_rows={diagnostics['gold_context_rows']} "
+        f"qa_intersection={diagnostics['qa_intersection_size']} "
+        f"gold_intersection={diagnostics['gold_intersection_size']} "
+        f"generated_answer_coverage={diagnostics['generated_answer_coverage']:.3f} "
+        f"retrieved_field={diagnostics['retrieved_field']} "
+        f"retrieved_field_coverage={diagnostics['retrieved_field_coverage']:.3f}"
+    )
+
+
+def _validate_eval_diagnostics(diagnostics: dict[str, Any], cfg: EvalConfig) -> None:
+    if diagnostics["pipeline1_result_rows"] == 0:
+        raise ValueError("Pipeline 2 loaded zero Pipeline 1 result rows.")
+    if diagnostics["evaluated_rows_expected"] == 0:
+        raise ValueError("Pipeline 2 would evaluate zero rows.")
+    if diagnostics["qa_intersection_size"] == 0:
+        raise ValueError("Pipeline 2 found zero matching question IDs between Pipeline 1 results and QA file.")
+    if diagnostics["gold_intersection_size"] == 0:
+        raise ValueError("Pipeline 2 found zero matching question IDs between Pipeline 1 results and gold contexts/source_files.")
+    if not cfg.evaluation.retrieval_only and diagnostics["generated_answer_coverage"] == 0.0:
+        raise ValueError("Pipeline 2 found no generated_answer values in Pipeline 1 results.")
+    if diagnostics["retrieved_field_coverage"] == 0.0:
+        raise ValueError(
+            f"Pipeline 2 found no non-empty values for retrieval_eval_field={diagnostics['retrieved_field']!r}."
+        )
 
 
 def _run_officeqa_smoke_validation(qa_by_id: dict[str, dict[str, Any]]) -> None:
@@ -697,6 +792,7 @@ def _eval_manifest(
     leaderboard: list[dict[str, Any]],
     difficulty_summary: list[dict[str, Any]],
     run_validity: dict[str, dict[str, Any]],
+    input_diagnostics: dict[str, Any],
     start_time: float,
     end_time: float,
 ) -> dict[str, Any]:
@@ -727,6 +823,7 @@ def _eval_manifest(
             "difficulty_summary_rows": len(difficulty_summary),
             "generation_failure_count": sum(int(stats["generation_failure_count"]) for stats in run_validity.values()),
         },
+        "input_diagnostics": input_diagnostics,
         "retrieval_only": cfg.evaluation.retrieval_only,
         "retrieval_eval_field": cfg.evaluation.retrieval_eval_field,
         "generation_failure_threshold": {
