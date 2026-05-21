@@ -521,7 +521,7 @@ def retrieve_top_k_unique_contexts(
     fetch_k: int,
     max_candidates: int,
 ) -> tuple[list, list, list[str], bool]:
-    candidate_k = max(fetch_k if reranker is not None else top_k, top_k)
+    candidate_k = max(fetch_k, top_k)
     raw_retrieved = []
     retrieved = []
     reranker_used = reranker is not None

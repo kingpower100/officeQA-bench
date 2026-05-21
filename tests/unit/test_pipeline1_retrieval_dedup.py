@@ -44,6 +44,36 @@ def test_retrieve_top_k_unique_backfills_from_additional_candidates():
     assert warnings == []
 
 
+def test_no_reranker_still_fetches_raw_fetch_k_candidates():
+    class FakeRetriever:
+        def __init__(self):
+            self.requested = []
+
+        def retrieve(self, question, top_k):
+            self.requested.append(top_k)
+            return [
+                RetrievalItem(chunk_id=f"c{idx}", original_context_id=f"ctx{idx}", text=str(idx), score=1.0 / idx)
+                for idx in range(1, top_k + 1)
+            ]
+
+    retriever = FakeRetriever()
+
+    raw, retrieved, warnings, reranker_used = retrieve_top_k_unique_contexts(
+        "Q?",
+        retriever,
+        reranker=None,
+        top_k=10,
+        fetch_k=50,
+        max_candidates=100,
+    )
+
+    assert retriever.requested == [50]
+    assert len(raw) == 50
+    assert len(retrieved) == 10
+    assert warnings == []
+    assert reranker_used is False
+
+
 def test_reranker_preserves_dense_score_and_adds_rerank_score():
     class FakeModel:
         def predict(self, pairs):
