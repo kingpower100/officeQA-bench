@@ -18,6 +18,7 @@ CANONICAL_METADATA_FIELDS = (
     "file_name",
     "source_dataset",
     "original_context_id",
+    "year_month",
     "treasury_year",
     "treasury_month",
     "treasury_year_month",
@@ -35,6 +36,7 @@ def parse_treasury_filename(filename: str) -> dict[str, Any]:
         "year": None,
         "month": None,
         "report_year": None,
+        "year_month": None,
         "treasury_year": None,
         "treasury_month": None,
         "treasury_year_month": None,
@@ -54,6 +56,7 @@ def parse_treasury_filename(filename: str) -> dict[str, Any]:
             "year": year,
             "month": f"{month:02d}" if month is not None else None,
             "report_year": year,
+            "year_month": year_month,
             "treasury_year": year,
             "treasury_month": month,
             "treasury_year_month": year_month,
@@ -96,6 +99,7 @@ def normalize_metadata(raw: dict[str, Any] | None, original_context_id: str | No
     for field in ("company_name", "company_symbol", "report_period", "sector", "industry", "file_name", "source_dataset"):
         normalized[field] = normalize_optional_string(source.get(field))
     normalized["report_year"] = safe_int(source.get("report_year"))
+    normalized["year_month"] = normalize_optional_string(source.get("year_month", source.get("treasury_year_month")))
     normalized["treasury_year"] = safe_int(source.get("treasury_year"))
     normalized["treasury_month"] = safe_int(source.get("treasury_month"))
     normalized["treasury_year_month"] = normalize_optional_string(source.get("treasury_year_month"))

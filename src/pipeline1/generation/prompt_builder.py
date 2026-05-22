@@ -74,6 +74,7 @@ def _format_context(item, include_metadata_headers: bool) -> str:
         ("Symbol", metadata.get("company_symbol")),
         ("Year", metadata.get("year") or metadata.get("report_year")),
         ("Month", metadata.get("month")),
+        ("Year-month", metadata.get("year_month") or metadata.get("treasury_year_month")),
         ("Source file", metadata.get("source_file")),
         ("Page", metadata.get("page_number")),
     ):

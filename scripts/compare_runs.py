@@ -5,16 +5,20 @@ import csv
 from pathlib import Path
 
 
+def _discover_summaries(root: Path) -> list[Path]:
+    return sorted(path for path in root.glob("*/summary_by_experiment.csv") if path.is_file())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Print rows from Pipeline 2 summary files.")
     parser.add_argument(
         "summary",
         nargs="*",
-        default=["data/eval/runs/pipeline2/eval_officeqa_treasury_bge_small_qwen2_5_7b/summary_by_experiment.csv"],
+        default=None,
     )
     args = parser.parse_args()
-    for raw in args.summary:
-        path = Path(raw)
+    summaries = [Path(raw) for raw in args.summary] if args.summary else _discover_summaries(Path("data/eval/runs/pipeline2"))
+    for path in summaries:
         if not path.exists():
             print(f"missing: {path}")
             continue

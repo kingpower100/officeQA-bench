@@ -62,13 +62,14 @@ class DenseRetriever(BaseRetriever):
                 metadata_boost_components(
                     ch.metadata,
                     query_metadata,
-                    company_weight=self.metadata_boosting.company_weight,
-                    year_weight=self.metadata_boosting.year_weight,
-                    month_weight=self.metadata_boosting.month_weight,
-                    year_month_weight=self.metadata_boosting.year_month_weight,
-                    symbol_weight=self.metadata_boosting.symbol_weight,
-                    file_name_weight=self.metadata_boosting.file_name_weight,
-                )
+                company_weight=self.metadata_boosting.company_weight,
+                year_weight=self.metadata_boosting.year_weight,
+                month_weight=self.metadata_boosting.month_weight,
+                year_month_weight=self.metadata_boosting.year_month_weight,
+                wrong_year_penalty=self.metadata_boosting.wrong_year_penalty,
+                symbol_weight=self.metadata_boosting.symbol_weight,
+                file_name_weight=self.metadata_boosting.file_name_weight,
+            )
                 if self.metadata_boosting.enabled
                 else {}
             )

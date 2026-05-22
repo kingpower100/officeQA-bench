@@ -88,6 +88,7 @@ class MetadataBoostingConfig(StrictConfigModel):
     year_weight: float = 0.15
     month_weight: float = 0.0
     year_month_weight: float = 0.0
+    wrong_year_penalty: float = 0.0
     symbol_weight: float = 0.2
     file_name_weight: float = 0.0
 
@@ -133,6 +134,7 @@ class RerankerConfig(StrictConfigModel):
     enabled: bool = False
     model_name: Optional[str] = None
     device: str = "cpu"
+    rerank_top_k: Optional[int] = Field(default=None, gt=0)
     final_top_k: Optional[int] = Field(default=None, gt=0)
 
     @field_validator("model_name")

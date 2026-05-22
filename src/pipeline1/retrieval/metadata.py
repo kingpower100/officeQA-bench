@@ -110,6 +110,7 @@ def metadata_boost(
     symbol_weight: float,
     month_weight: float = 0.0,
     year_month_weight: float = 0.0,
+    wrong_year_penalty: float = 0.0,
     file_name_weight: float = 0.0,
 ) -> float:
     return sum(metadata_boost_components(
@@ -119,6 +120,7 @@ def metadata_boost(
         year_weight=year_weight,
         month_weight=month_weight,
         year_month_weight=year_month_weight,
+        wrong_year_penalty=wrong_year_penalty,
         symbol_weight=symbol_weight,
         file_name_weight=file_name_weight,
     ).values())
@@ -131,6 +133,7 @@ def metadata_boost_components(
     year_weight: float,
     month_weight: float = 0.0,
     year_month_weight: float = 0.0,
+    wrong_year_penalty: float = 0.0,
     symbol_weight: float = 0.2,
     file_name_weight: float = 0.0,
 ) -> dict[str, float]:
@@ -141,7 +144,7 @@ def metadata_boost_components(
     file_name = normalize_text(metadata.get("file_name"))
     year = safe_int(metadata.get("treasury_year")) or safe_int(metadata.get("report_year"))
     month = safe_int(metadata.get("treasury_month"))
-    year_month = str(metadata.get("treasury_year_month") or "")
+    year_month = str(metadata.get("year_month") or metadata.get("treasury_year_month") or "")
     year_signals = query.years | query.fiscal_years
     if company and company in query.company_names:
         components["company"] = company_weight
@@ -149,6 +152,8 @@ def metadata_boost_components(
         components["symbol"] = symbol_weight
     if year is not None and year in year_signals:
         components["year"] = year_weight
+    elif year is not None and year_signals and wrong_year_penalty:
+        components["wrong_year_penalty"] = wrong_year_penalty
     if month is not None and month in query.months:
         components["month"] = month_weight
     if year_month and year_month in query.year_months:
@@ -162,7 +167,7 @@ def metadata_matches(metadata: dict[str, Any], query: QueryMetadata) -> dict[str
     company = normalize_text(metadata.get("company_name"))
     year = safe_int(metadata.get("treasury_year")) or safe_int(metadata.get("report_year"))
     month = safe_int(metadata.get("treasury_month"))
-    year_month = metadata.get("treasury_year_month")
+    year_month = metadata.get("year_month") or metadata.get("treasury_year_month")
     year_signals = query.years | query.fiscal_years
     company_match = None if not query.company_names else bool(company and company in query.company_names)
     year_match = None if not year_signals else bool(year is not None and year in year_signals)

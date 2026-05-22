@@ -1,0 +1,140 @@
+# Experiment 08: fixed512 elastic hybrid date-aware
+extends: "../base.yaml"
+
+experiment:
+  experiment_id: "08_officeqa_treasury_fixed512_elastic_hybrid_dateaware_bge_small_llama3_ctxbudget"
+  random_seed: 42
+  output_dir: "data/runs/pipeline1"
+
+documents:
+  source_type: "txt_folder"
+  path: "data/raw/transformed"
+  file_glob: "*.txt"
+  recursive: true
+  text_field: "cleaned_context"
+
+data:
+  questions_path: "data/raw/questions_only.jsonl"
+  question_id_field: "uid"
+  question_field: "question"
+  allow_document_text_fallback: false
+  allow_unsafe_query_fields: false
+  use_ground_truth_contexts: false
+  use_gold_answers: false
+
+chunking:
+  strategy: "fixed_token"
+  chunk_size: 512
+  chunk_overlap: 64
+  tokenizer_name: "cl100k_base"
+  allow_word_fallback: false
+  max_chunk_chars: 8000
+  max_chunk_tokens: 1800
+  oversized_chunk_policy: "split"
+  oversized_chunk_warning: true
+
+embedding:
+  provider: "sentence_transformers"
+  model_name: "BAAI/bge-small-en-v1.5"
+  normalize_embeddings: true
+  batch_size: 128
+  device: "cuda"
+  require_cuda: true
+
+index:
+  type: "elasticsearch"
+  host: "http://localhost:9201"
+  index_name: "officeqa_treasury_fixed512_elastic_hybrid_dateaware_dense"
+  dense_dim: 384
+  vector_field: "embedding"
+  text_field: "text"
+  similarity: "cosine"
+  recreate: true
+  retrieval_mode: "knn"
+  num_candidates: 200
+  shards: 1
+  replicas: 0
+  refresh_after_index: true
+  request_timeout: 60
+  verify_certs: false
+  username: null
+  password: null
+  api_key: null
+
+retrieval:
+  retriever_type: "hybrid_rrf"
+  top_k: 10
+  fetch_k: 200
+  bm25:
+    enabled: true
+    backend: "elasticsearch"
+    host: "http://localhost:9201"
+    index_name: "officeqa_treasury_fixed512_elastic_hybrid_dateaware_bm25"
+    rebuild_index: true
+    allow_fallback: false
+    k1: 1.5
+    b: 0.75
+  hybrid:
+    rrf_k: 60
+    dense_weight: 1.0
+    bm25_weight: 3.0
+  metadata_boosting:
+    enabled: true
+    year_weight: 5.0
+    month_weight: 3.0
+    year_month_weight: 10.0
+    wrong_year_penalty: -3.0
+    company_weight: 0.0
+    symbol_weight: 0.0
+    file_name_weight: 0.0
+  metadata_filtering:
+    enabled: true
+    strict: false
+    strict_year_match: false
+    strict_year_month_match: false
+
+reranker:
+  enabled: true
+  model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  device: "cuda"
+  rerank_top_k: 20
+  final_top_k: 10
+
+generation:
+  provider: "ollama"
+  model_name: "llama3:latest"
+  base_url: "http://localhost:11434"
+  temperature: 0.0
+  max_tokens: 64
+  timeout_s: 180
+  include_metadata_headers: true
+  max_prompt_tokens: 8192
+  max_context_tokens: 6000
+  max_chunk_tokens: 1800
+  max_context_chars: 24000
+  max_chunk_chars: 8000
+  context_truncation_strategy: "ranked_budget"
+  log_prompt_stats: true
+  system_prompt: |
+    You are a financial question-answering system.
+
+    Identify the relevant year and month from the question before answering.
+    Prefer the retrieved table row or evidence sentence that matches that date.
+    Use ONLY the retrieved context.
+    Return ONLY the final answer.
+    Do not explain your reasoning.
+    Do not use markdown.
+    If the required evidence is truly absent, return EXACTLY: UNKNOWN.
+
+telemetry:
+  estimate_cost: true
+  pricing:
+    input_per_1k_tokens_usd: 0.0
+    output_per_1k_tokens_usd: 0.0
+
+runtime:
+  save_csv: true
+  log_level: "INFO"
+  resume: true
+  overwrite: false
+  cache_mismatch_policy: "raise"

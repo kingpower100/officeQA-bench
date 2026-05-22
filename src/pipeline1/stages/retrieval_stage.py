@@ -83,7 +83,16 @@ class RetrievalStage(BaseStage):
             else None
         )
         self._print_reranker_runtime_state(reranker)
-        final_top_k = self.cfg.reranker.final_top_k or self.cfg.retrieval.top_k
+        final_top_k = (
+            self.cfg.reranker.final_top_k
+            if self.cfg.reranker.enabled and self.cfg.reranker.final_top_k
+            else self.cfg.retrieval.top_k
+        )
+        rerank_top_k = (
+            self.cfg.reranker.rerank_top_k
+            if self.cfg.reranker.enabled and self.cfg.reranker.rerank_top_k
+            else final_top_k
+        )
         rows: list[RetrievalRow] = []
         for row_index, query in enumerate(tqdm(queries, desc="Retrieving contexts", unit="question"), start=1):
             if self.logger:
@@ -101,6 +110,7 @@ class RetrievalStage(BaseStage):
                 question_id=query.question_id,
                 metrics={
                     "top_k": final_top_k,
+                    "rerank_top_k": rerank_top_k,
                     "fetch_k": self.cfg.retrieval.fetch_k,
                     "retriever_type": self.cfg.retrieval.retriever_type,
                 },
@@ -111,20 +121,35 @@ class RetrievalStage(BaseStage):
                     event_type=EventType.RERANK_START,
                     message="Reranking started.",
                     question_id=query.question_id,
-                    metrics={"final_top_k": final_top_k, "fetch_k": self.cfg.retrieval.fetch_k},
+                    metrics={
+                        "final_top_k": final_top_k,
+                        "rerank_top_k": rerank_top_k,
+                        "fetch_k": self.cfg.retrieval.fetch_k,
+                    },
                 )
             raw_retrieved, retrieved, retrieval_warnings, reranker_used = retrieve_top_k_unique_contexts(
                 query.question,
                 retriever,
                 reranker,
-                final_top_k,
+                rerank_top_k,
                 self.cfg.retrieval.fetch_k,
                 max_candidates=len(self.chunks),
             )
+            reranked_candidates = list(retrieved)
+            if reranker_used and len(retrieved) > final_top_k:
+                retrieved = retrieved[:final_top_k]
             raw_dense_retrieved = last_candidates(retriever, "last_dense_candidates")
             raw_bm25_retrieved = last_candidates(retriever, "last_bm25_candidates")
             fused_retrieved = last_candidates(retriever, "last_fused_candidates")
             retrieval_diagnostics = retrieval_diagnostics_from(retriever)
+            retrieval_diagnostics.update(
+                {
+                    "final_top_k": final_top_k,
+                    "rerank_top_k": rerank_top_k,
+                    "reranked_candidate_ids": [item.chunk_id for item in reranked_candidates],
+                    "final_candidate_ids": [item.chunk_id for item in retrieved],
+                }
+            )
             retrieval_time_ms = (time.perf_counter() - retrieval_start) * 1000
             self._write_event(
                 stage="retrieval",
@@ -135,6 +160,7 @@ class RetrievalStage(BaseStage):
                 metrics={
                     "raw_candidates": len(raw_retrieved),
                     "final_contexts": len(retrieved),
+                    "rerank_candidates": len(reranked_candidates),
                     "retriever_type": self.cfg.retrieval.retriever_type,
                 },
                 diagnostics={"warnings": retrieval_warnings, **retrieval_diagnostics},
@@ -146,7 +172,11 @@ class RetrievalStage(BaseStage):
                     message="Reranking completed.",
                     question_id=query.question_id,
                     duration_ms=retrieval_time_ms,
-                    metrics={"raw_candidates": len(raw_retrieved), "final_contexts": len(retrieved)},
+                    metrics={
+                        "raw_candidates": len(raw_retrieved),
+                        "final_contexts": len(retrieved),
+                        "rerank_candidates": len(reranked_candidates),
+                    },
                     diagnostics={"duration_includes_retrieval": True},
                 )
             for warning in retrieval_warnings:
@@ -179,7 +209,11 @@ class RetrievalStage(BaseStage):
             stage_name=self.stage_name,
             artifacts={"retriever": retriever, "reranker": reranker, "retrieval_rows": rows},
             diagnostics={"attempted": len(queries), "retrieved_rows": len(rows)},
-            metadata={"final_top_k": final_top_k, "retriever_type": self.cfg.retrieval.retriever_type},
+            metadata={
+                "final_top_k": final_top_k,
+                "rerank_top_k": rerank_top_k,
+                "retriever_type": self.cfg.retrieval.retriever_type,
+            },
             retriever=retriever,
             reranker=reranker,
             final_top_k=final_top_k,
