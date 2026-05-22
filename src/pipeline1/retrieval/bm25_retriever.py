@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from collections import Counter
 
+from src.pipeline1.retrieval.adapters import search_results_to_retrieval_items, strip_adapter_metadata
 from src.pipeline1.retrieval.base import BaseRetriever
+from src.pipeline1.retrieval.contracts import DedupePolicy, RetrievalTrace, SearchQuery, SearchResult
+from src.pipeline1.retrieval.dedupe import dedupe_search_results
 from src.pipeline1.schemas.chunk import ChunkRecord
 from src.pipeline1.schemas.retrieval import RetrievalItem
 
@@ -25,9 +29,27 @@ class BM25Retriever(BaseRetriever):
         self.last_bm25_candidates: list[RetrievalItem] = []
 
     def retrieve(self, question: str, top_k: int) -> list[RetrievalItem]:
-        query_terms = _tokenize(question)
+        results, trace = self.search(SearchQuery(question_id="", query_text=question, top_k=top_k, fetch_k=top_k))
+        ranked = strip_adapter_metadata(search_results_to_retrieval_items(results))
+        self.last_bm25_candidates = ranked
+        self.last_retrieval_diagnostics = dict(trace.diagnostics)
+        return ranked
+
+    def search(self, query: SearchQuery) -> tuple[list[SearchResult], RetrievalTrace]:
+        start = time.perf_counter()
+        query_terms = _tokenize(query.query_text)
         if not query_terms or not self.chunks:
-            return []
+            trace = RetrievalTrace(
+                question_id=query.question_id,
+                backend="bm25",
+                query_latency_ms=(time.perf_counter() - start) * 1000,
+                raw_results_count=0,
+                final_results_count=0,
+                dedupe_policy=DedupePolicy.NONE.value,
+                filters_applied=query.filters,
+                diagnostics={"dedupe_policy": DedupePolicy.NONE.value},
+            )
+            return [], trace
         query_terms = list(dict.fromkeys(query_terms))
         scored = []
         for idx, chunk in enumerate(self.chunks):
@@ -36,25 +58,44 @@ class BM25Retriever(BaseRetriever):
                 continue
             scored.append((score, idx, chunk))
         scored.sort(key=lambda item: (-item[0], item[1]))
-        ranked = [
-            RetrievalItem(
+        results = [
+            SearchResult(
                 chunk_id=chunk.chunk_id,
+                document_id=chunk.document_id,
                 original_context_id=chunk.original_context_id or chunk.document_id,
                 text=chunk.text,
                 score=float(score),
-                dense_score=None,
-                bm25_score=float(score),
-                rrf_score=None,
-                rerank_score=None,
-                ranking_score_type="bm25_score",
-                retrieval_source="bm25",
-                chunk_unit=chunk.metadata.get("chunk_unit"),
+                retrieval_backend="bm25",
                 metadata=dict(chunk.metadata),
+                diagnostics={"bm25_score": float(score), "ranking_score_type": "bm25_score"},
             )
-            for score, _, chunk in scored[:top_k]
+            for score, _, chunk in scored
         ]
-        self.last_bm25_candidates = ranked
-        return ranked
+        ranked, dedupe_diagnostics = dedupe_search_results(results, query.top_k, DedupePolicy.NONE)
+        ranked = [
+            SearchResult(
+                chunk_id=result.chunk_id,
+                document_id=result.document_id,
+                original_context_id=result.original_context_id,
+                text=result.text,
+                score=result.score,
+                rank=index,
+                retrieval_backend=result.retrieval_backend,
+                metadata=result.metadata,
+                diagnostics=result.diagnostics,
+            )
+            for index, result in enumerate(ranked, start=1)
+        ]
+        return ranked, RetrievalTrace(
+            question_id=query.question_id,
+            backend="bm25",
+            query_latency_ms=(time.perf_counter() - start) * 1000,
+            raw_results_count=len(results),
+            final_results_count=len(ranked),
+            dedupe_policy=DedupePolicy.NONE.value,
+            filters_applied=query.filters,
+            diagnostics=dedupe_diagnostics,
+        )
 
     def extract_query_metadata(self, question: str):
         from src.pipeline1.retrieval.metadata import extract_query_metadata

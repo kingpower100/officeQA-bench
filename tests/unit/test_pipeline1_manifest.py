@@ -106,6 +106,7 @@ runtime:
     run_dir = run_pipeline(str(cfg_path))
 
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     assert manifest["config_path"] == str(cfg_path.resolve())
     assert manifest["config_hash"]
     assert manifest["data_hashes"]["documents_sha256"]
@@ -118,6 +119,10 @@ runtime:
     assert manifest["output_row_counts"]["results.jsonl"] == 1
     assert manifest["start_timestamp_utc"]
     assert manifest["end_timestamp_utc"]
+    assert events[0]["event_type"] == "pipeline_start"
+    assert events[-1]["event_type"] == "pipeline_end"
+    assert any(event["event_type"] == "retrieval_end" and event["question_id"] == "q1" for event in events)
+    assert any(event["event_type"] == "generation_end" and event["question_id"] == "q1" for event in events)
 
 
 def test_pipeline1_manifest_records_txt_folder_input(tmp_path, monkeypatch):

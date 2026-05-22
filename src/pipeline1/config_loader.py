@@ -10,6 +10,7 @@ def load_pipeline_config_payload(config_path: str, validate_unique_experiment_id
     config_file = Path(config_path).resolve()
     payload = _load_with_extends(config_file)
     payload = _normalize_documents_config(payload)
+    payload = _normalize_retrieval_type_alias(payload)
     if validate_unique_experiment_id:
         _validate_experiment_id_matches_config_name(config_file, payload)
         _validate_unique_experiment_id(config_file, payload)
@@ -58,6 +59,16 @@ def _normalize_documents_config(payload: dict[str, Any]) -> dict[str, Any]:
         if source_key in documents:
             data[target_key] = documents[source_key]
     payload["data"] = data
+    return payload
+
+
+def _normalize_retrieval_type_alias(payload: dict[str, Any]) -> dict[str, Any]:
+    retrieval = payload.get("retrieval")
+    if not isinstance(retrieval, dict) or "type" not in retrieval:
+        return payload
+    normalized = dict(retrieval)
+    normalized["retriever_type"] = normalized.pop("type")
+    payload["retrieval"] = normalized
     return payload
 
 

@@ -1,6 +1,7 @@
 from src.pipeline1.retrieval.bm25_retriever import BM25Retriever
 from src.pipeline1.retrieval.dense_retriever import DenseRetriever
 from src.pipeline1.retrieval.elasticsearch_bm25_retriever import ElasticsearchBM25Error, ElasticsearchBM25Retriever
+from src.pipeline1.retrieval.elasticsearch_dense_retriever import ElasticsearchDenseRetriever
 from src.pipeline1.retrieval.hybrid_rrf_retriever import HybridRRFRetriever
 from src.pipeline1.schemas.config_schema import RetrievalConfig
 
@@ -8,6 +9,16 @@ from src.pipeline1.schemas.config_schema import RetrievalConfig
 def build_retriever(config: RetrievalConfig, embedder, index, chunks):
     if config.retriever_type == "bm25":
         return _build_bm25_retriever(config, chunks)
+    if config.retriever_type == "elasticsearch_dense":
+        return ElasticsearchDenseRetriever(
+            embedder=embedder,
+            index=index,
+            chunks=chunks,
+            top_k=config.top_k,
+            fetch_k=config.fetch_k,
+            metadata_boosting=config.metadata_boosting,
+            metadata_filtering=config.metadata_filtering,
+        )
 
     dense_retriever = DenseRetriever(
         embedder=embedder,

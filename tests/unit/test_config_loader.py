@@ -35,6 +35,42 @@ def test_pipeline_configs_load_current_examples():
     assert p2.runtime.overwrite is False
 
 
+def test_elasticsearch_pipeline_configs_load():
+    script_score = PipelineConfig.from_yaml(
+        "configs/pipeline1/experiments/"
+        "officeqa_treasury_fixed512_bge_small_elastic_script_score_qwen25_7b_ctxbudget.yaml"
+    )
+    knn = PipelineConfig.from_yaml(
+        "configs/pipeline1/experiments/"
+        "officeqa_treasury_fixed512_bge_small_elastic_knn_qwen25_7b_ctxbudget.yaml"
+    )
+    eval_script_score = EvalConfig.from_yaml(
+        "configs/pipeline2/experiments/"
+        "eval_officeqa_treasury_fixed512_bge_small_elastic_script_score_qwen25_7b_fileeval_ks1_3_5_10_numacc.yaml"
+    )
+    eval_knn = EvalConfig.from_yaml(
+        "configs/pipeline2/experiments/"
+        "eval_officeqa_treasury_fixed512_bge_small_elastic_knn_qwen25_7b_fileeval_ks1_3_5_10_numacc.yaml"
+    )
+
+    assert script_score.index.type == "elasticsearch"
+    assert script_score.index.retrieval_mode == "script_score"
+    assert script_score.retrieval.retriever_type == "elasticsearch_dense"
+    assert script_score.retrieval.fetch_k == 50
+    assert knn.index.type == "elasticsearch"
+    assert knn.index.retrieval_mode == "knn"
+    assert knn.index.num_candidates == 100
+    assert knn.retrieval.retriever_type == "elasticsearch_dense"
+    assert eval_script_score.inputs.rag_outputs == [
+        "data/runs/pipeline1/officeqa_treasury_fixed512_bge_small_elastic_script_score_qwen25_7b_ctxbudget/results.jsonl"
+    ]
+    assert eval_knn.inputs.rag_outputs == [
+        "data/runs/pipeline1/officeqa_treasury_fixed512_bge_small_elastic_knn_qwen25_7b_ctxbudget/results.jsonl"
+    ]
+    assert eval_script_score.retrieval.ks == [1, 3, 5, 10]
+    assert eval_knn.retrieval.ks == [1, 3, 5, 10]
+
+
 def test_pipeline1_base_uses_question_only_and_safe_run_defaults():
     p1 = PipelineConfig.from_yaml("configs/pipeline1/base.yaml")
 

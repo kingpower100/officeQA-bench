@@ -6,7 +6,7 @@ from src.pipeline1.config_loader import load_pipeline_config_payload
 
 
 class StrictConfigModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_by_alias=True, validate_by_name=True)
 
 
 class ExperimentConfig(StrictConfigModel):
@@ -59,8 +59,27 @@ class EmbeddingConfig(StrictConfigModel):
 
 
 class IndexConfig(StrictConfigModel):
-    type: Literal["faiss"]
+    type: Literal["faiss", "elasticsearch"]
     metric: Literal["cosine", "l2"] = "cosine"
+    host: str = "http://localhost:9200"
+    index_name: str = "officeqa_fixed512_bge_small"
+    index_alias: Optional[str] = None
+    index_version: Optional[str] = None
+    dense_dim: int = Field(default=384, gt=0)
+    vector_field: str = "embedding"
+    text_field: str = "text"
+    similarity: Literal["cosine"] = "cosine"
+    recreate: bool = False
+    retrieval_mode: Literal["script_score", "knn"] = "script_score"
+    num_candidates: int = Field(default=100, gt=0)
+    shards: int = Field(default=1, gt=0)
+    replicas: int = Field(default=0, ge=0)
+    refresh_after_index: bool = True
+    request_timeout: int = Field(default=60, gt=0)
+    verify_certs: bool = False
+    username: Optional[str] = None
+    password: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 class MetadataBoostingConfig(StrictConfigModel):
@@ -98,7 +117,10 @@ class HybridConfig(StrictConfigModel):
 
 
 class RetrievalConfig(StrictConfigModel):
-    retriever_type: Literal["dense", "bm25", "hybrid_rrf"] = "dense"
+    retriever_type: Literal["dense", "bm25", "hybrid_rrf", "elasticsearch_dense"] = Field(
+        default="dense",
+        validation_alias=AliasChoices("retriever_type", "type"),
+    )
     top_k: int = Field(gt=0)
     fetch_k: int = Field(gt=0)
     metadata_boosting: MetadataBoostingConfig = Field(default_factory=MetadataBoostingConfig)

@@ -13,24 +13,34 @@ from src.pipeline1.chunking.sentence_chunker import SENTENCE_CHUNKER_VERSION, SE
 from src.pipeline1.chunking.table_aware_chunker import TABLE_AWARE_CHUNKER_VERSION, TableAwareChunker
 from src.pipeline1.embedding.cache import EmbeddingCache
 from src.pipeline1.embedding.factory import build_embedder
-from src.pipeline1.generation.cost_estimator import estimate_cost
 from src.pipeline1.generation.factory import build_generator
-from src.pipeline1.generation.prompt_builder import PROMPT_TEMPLATE_VERSION, PromptBudget, build_prompt_with_stats, dedupe_prompt_contexts
+from src.pipeline1.generation.prompt_builder import PROMPT_TEMPLATE_VERSION
 from src.pipeline1.indexing.factory import build_index
 from src.pipeline1.io.jsonl_reader import JsonlReader, list_txt_files
 from src.pipeline1.io.manifest_writer import write_manifest
 from src.pipeline1.io.result_writer import ResultWriter
 from src.pipeline1.metadata import TREASURY_METADATA_SCHEMA_VERSION
+from src.pipeline1.observability.events import EventType, EventWriter
 from src.pipeline1.preflight import run_preflight_checks
-from src.pipeline1.retrieval.cross_encoder_reranker import CrossEncoderReranker
-from src.pipeline1.retrieval.factory import build_retriever
 from src.pipeline1.schemas.chunk import ChunkRecord
 from src.pipeline1.schemas.config_schema import PipelineConfig
-from src.pipeline1.schemas.output_record import OutputRecord
+from src.pipeline1.stages.base import StageInput
+from src.pipeline1.stages.chunking_stage import ChunkingStage
+from src.pipeline1.stages.document_stage import DocumentStage
+from src.pipeline1.stages.embedding_stage import EmbeddingStage
+from src.pipeline1.stages.generation_stage import GenerationStage
+from src.pipeline1.stages.retrieval_stage import (
+    RetrievalStage,
+    dedupe_retrieval_by_chunk_id,
+    json_safe,
+    last_candidates,
+    retrieval_diagnostics_from,
+    retrieve_top_k_unique_contexts,
+)
+from src.pipeline1.stages.run_writer_stage import RunWriterStage
 from src.pipeline1.telemetry.logger import build_logger
 from src.pipeline1.utils.hashing import file_sha256, stable_hash_dict
 from src.pipeline1.utils.seed import set_seed
-from tqdm.auto import tqdm
 
 
 def run_pipeline(config_path: str) -> Path:
@@ -45,42 +55,74 @@ def run_pipeline(config_path: str) -> Path:
     _prepare_run_dir(run_dir, cfg.runtime.resume, cfg.runtime.overwrite)
     run_dir.mkdir(parents=True, exist_ok=True)
     logger = build_logger(run_dir / "logs.txt", cfg.runtime.log_level)
+    event_writer = EventWriter(run_dir / "events.jsonl", cfg.experiment.experiment_id, run_id=cfg.experiment.experiment_id)
+    event_writer.write(
+        stage="pipeline",
+        event_type=EventType.PIPELINE_START,
+        message="Pipeline 1 run started.",
+        metrics={"config_path": str(Path(config_path).resolve())},
+    )
 
     print("[2/10] Running preflight checks")
     preflight_errors = run_preflight_checks(cfg, project_root)
     if preflight_errors:
+        event_writer.write(
+            stage="pipeline",
+            event_type=EventType.PIPELINE_ERROR,
+            message="Pipeline 1 preflight failed.",
+            diagnostics={"errors": preflight_errors},
+        )
+        event_writer.close()
         raise RuntimeError("; ".join(preflight_errors))
     docs_path = project_root / cfg.data.documents_path
     questions_path = project_root / cfg.data.questions_path
     print("[3/10] Loading documents")
-    docs, document_input_info = _load_documents(cfg, docs_path)
+    document_load_start = time.perf_counter()
+    event_writer.write(
+        stage="documents",
+        event_type=EventType.DOCUMENT_LOAD_START,
+        message="Document loading started.",
+        metrics={"documents_path": str(docs_path), "documents_source_type": cfg.data.documents_source_type},
+    )
+    document_output = DocumentStage(cfg, docs_path).run()
+    docs = document_output.documents
+    document_input_info = document_output.document_input_info
+    event_writer.write(
+        stage="documents",
+        event_type=EventType.DOCUMENT_LOAD_END,
+        message="Document loading completed.",
+        duration_ms=(time.perf_counter() - document_load_start) * 1000,
+        metrics={"document_count": len(docs), **document_input_info},
+    )
     logger.info("document_input=%s", document_input_info)
 
     cache_dir = project_root / "data" / "processed"
-    chunker_versions = _chunker_versions(cfg)
-    documents_fingerprint = _documents_fingerprint(cfg, docs_path)
-    chunks_key = stable_hash_dict(
-        {
-            "documents_fingerprint": documents_fingerprint,
-            "documents_source_type": cfg.data.documents_source_type,
-            "documents_file_glob": cfg.data.documents_file_glob,
-            "documents_recursive": cfg.data.documents_recursive,
-            "document_text_field": cfg.data.document_text_field,
-            "allow_document_text_fallback": cfg.data.allow_document_text_fallback,
-            "metadata_schema_version": TREASURY_METADATA_SCHEMA_VERSION,
-            "chunking": cfg.chunking.model_dump(),
-            "chunker_versions": chunker_versions,
-        }
-    )
-    chunks_path = cache_dir / "chunks" / f"{chunks_key}.jsonl"
     print("[4/10] Chunking documents")
-    chunks = _load_chunks(chunks_path)
-    if chunks is None:
-        chunks = _build_chunker(cfg).chunk_documents(docs, show_progress=True)
-        _save_chunks(chunks_path, chunks)
-    else:
-        logger.info("Loaded cached chunks: %s", chunks_path)
-    chunk_diagnostics = _chunk_diagnostics(chunks, cfg)
+    chunking_start = time.perf_counter()
+    event_writer.write(
+        stage="chunking",
+        event_type=EventType.CHUNKING_START,
+        message="Chunking started.",
+        metrics={"chunking_strategy": cfg.chunking.strategy, "chunk_size": cfg.chunking.chunk_size, "chunk_overlap": cfg.chunking.chunk_overlap},
+    )
+    chunking_output = ChunkingStage(cfg, project_root, cache_dir, docs_path, logger=logger).run(
+        StageInput({"documents": docs})
+    )
+    chunks = chunking_output.chunks
+    chunks_key = chunking_output.chunks_key
+    chunks_path = chunking_output.chunks_path
+    chunker_versions = chunking_output.chunker_versions
+    documents_fingerprint = chunking_output.documents_fingerprint
+    chunk_diagnostics = chunking_output.chunk_diagnostics
+    chunk_cache_status = chunking_output.cache_status
+    event_writer.write(
+        stage="chunking",
+        event_type=EventType.CHUNKING_END,
+        message="Chunking completed.",
+        duration_ms=(time.perf_counter() - chunking_start) * 1000,
+        metrics={"chunk_count": len(chunks), "cache_status": chunk_cache_status, "chunks_path": str(chunks_path)},
+        diagnostics=chunk_diagnostics,
+    )
     if chunk_diagnostics["empty_chunks"]:
         raise RuntimeError(f"Chunk validation failed: empty_chunks={chunk_diagnostics['empty_chunks']}")
     if chunk_diagnostics["over_max_chunk_chars"] or chunk_diagnostics["over_max_chunk_tokens"]:
@@ -93,40 +135,45 @@ def run_pipeline(config_path: str) -> Path:
             raise RuntimeError(message)
         logger.warning(message)
 
-    embedder = build_embedder(cfg.embedding)
-    _print_embedding_runtime_state(cfg, embedder)
-    embeddings_key = stable_hash_dict(
-        {
-            "chunks_key": chunks_key,
-            "embedding": cfg.embedding.model_dump(),
-        }
-    )
-    embeddings_path = cache_dir / "embeddings" / f"{embeddings_key}.npy"
     print("[5/10] Generating embeddings")
+    embedding_start = time.perf_counter()
+    event_writer.write(
+        stage="embedding",
+        event_type=EventType.EMBEDDING_START,
+        message="Embedding stage started.",
+        metrics={"embedding_model": cfg.embedding.model_name, "chunk_count": len(chunks)},
+    )
     cache_validation = {"embeddings": "not_loaded", "index": "not_loaded"}
-    embeddings = EmbeddingCache.load(embeddings_path)
-    if embeddings is None:
-        embeddings = embedder.encode_texts([chunk.text for chunk in chunks], show_progress=True)
-        EmbeddingCache.save(embeddings_path, embeddings, {"chunks_key": chunks_key, "embedding": cfg.embedding.model_dump()})
-        cache_validation["embeddings"] = "built"
-    else:
-        try:
-            _validate_embedding_cache(embeddings, len(chunks), embeddings_path, chunks_key, cfg.embedding.model_dump())
-            cache_validation["embeddings"] = "validated"
-        except RuntimeError:
-            if cfg.runtime.cache_mismatch_policy != "rebuild":
-                raise
-            embeddings_path.unlink(missing_ok=True)
-            embeddings_path.with_suffix(embeddings_path.suffix + ".meta.json").unlink(missing_ok=True)
-            embeddings = embedder.encode_texts([chunk.text for chunk in chunks], show_progress=True)
-            EmbeddingCache.save(embeddings_path, embeddings, {"chunks_key": chunks_key, "embedding": cfg.embedding.model_dump()})
-            cache_validation["embeddings"] = "rebuilt_after_mismatch"
-        logger.info("Loaded cached embeddings: %s", embeddings_path)
+    embedding_output = EmbeddingStage(cfg, cache_dir, embedder_factory=build_embedder, logger=logger).run(
+        StageInput({"chunks": chunks, "chunks_key": chunks_key})
+    )
+    embedder = embedding_output.embedder
+    embeddings = embedding_output.embeddings
+    embeddings_key = embedding_output.embeddings_key
+    embeddings_path = embedding_output.embeddings_path
+    cache_validation["embeddings"] = embedding_output.cache_status
+    _print_embedding_runtime_state(cfg, embedder)
+    event_writer.write(
+        stage="embedding",
+        event_type=EventType.EMBEDDING_END,
+        message="Embedding stage completed.",
+        duration_ms=(time.perf_counter() - embedding_start) * 1000,
+        metrics={
+            "embedding_rows": int(embeddings.shape[0]) if len(embeddings.shape) > 0 else 0,
+            "embedding_dim": int(embeddings.shape[1]) if len(embeddings.shape) > 1 else None,
+            "cache_status": cache_validation["embeddings"],
+        },
+    )
 
+    index_config_for_cache = (
+        {"type": cfg.index.type, "metric": cfg.index.metric}
+        if cfg.index.type == "faiss"
+        else cfg.index.model_dump()
+    )
     index_key = stable_hash_dict(
         {
             "embeddings_key": embeddings_key,
-            "index": cfg.index.model_dump(),
+            "index": index_config_for_cache,
         }
     )
     compatibility_payload = _run_compatibility_payload(
@@ -139,27 +186,51 @@ def run_pipeline(config_path: str) -> Path:
     )
     if run_dir.exists() and cfg.runtime.resume and not cfg.runtime.overwrite and (run_dir / "results.jsonl").exists():
         _validate_resume_compatible(run_dir, compatibility_payload)
-    index_path = cache_dir / "indexes" / f"{index_key}.faiss"
     index = build_index(cfg.index)
-    print("[6/10] Building/loading FAISS index")
-    if index_path.exists():
-        index.load(str(index_path))
-        try:
-            _validate_index_cache(index, len(chunks), embeddings, index_path)
-            cache_validation["index"] = "validated"
-        except RuntimeError:
-            if cfg.runtime.cache_mismatch_policy != "rebuild":
-                raise
-            index_path.unlink(missing_ok=True)
-            index.build(embeddings)
-            index.save(str(index_path))
-            cache_validation["index"] = "rebuilt_after_mismatch"
-        logger.info("Loaded FAISS index: %s", index_path)
-    else:
+    if hasattr(index, "set_chunks"):
+        index.set_chunks(chunks)
+    index_suffix = ".elasticsearch" if getattr(index, "uses_external_storage", False) else ".faiss"
+    index_path = cache_dir / "indexes" / f"{index_key}{index_suffix}"
+    print(f"[6/10] Building/loading {cfg.index.type} index")
+    index_start = time.perf_counter()
+    event_writer.write(
+        stage="indexing",
+        event_type=EventType.INDEX_BUILD_START,
+        message="Index stage started.",
+        metrics={"index_type": cfg.index.type, "index_path": str(index_path), "chunk_count": len(chunks)},
+    )
+    if getattr(index, "uses_external_storage", False):
         index.build(embeddings)
         index.save(str(index_path))
-        cache_validation["index"] = "built"
-        logger.info("Built FAISS index: %s", index_path)
+        cache_validation["index"] = "built_or_reused"
+        logger.info("Prepared %s index: %s", cfg.index.type, index_path)
+    else:
+        if index_path.exists():
+            index.load(str(index_path))
+            try:
+                _validate_index_cache(index, len(chunks), embeddings, index_path)
+                cache_validation["index"] = "validated"
+            except RuntimeError:
+                if cfg.runtime.cache_mismatch_policy != "rebuild":
+                    raise
+                index_path.unlink(missing_ok=True)
+                index.build(embeddings)
+                index.save(str(index_path))
+                cache_validation["index"] = "rebuilt_after_mismatch"
+            logger.info("Loaded FAISS index: %s", index_path)
+        else:
+            index.build(embeddings)
+            index.save(str(index_path))
+            cache_validation["index"] = "built"
+            logger.info("Built FAISS index: %s", index_path)
+    event_writer.write(
+        stage="indexing",
+        event_type=EventType.INDEX_BUILD_END,
+        message="Index stage completed.",
+        duration_ms=(time.perf_counter() - index_start) * 1000,
+        metrics={"index_type": cfg.index.type, "cache_status": cache_validation["index"], "index_path": str(index_path)},
+        diagnostics={"health": getattr(index, "last_health", {})},
+    )
 
     print("[7/10] Loading questions")
     queries = list(
@@ -173,243 +244,74 @@ def run_pipeline(config_path: str) -> Path:
     )
     _log_run_info(logger, cfg, docs_count=len(docs), chunk_count=len(chunks), question_count=len(queries), questions_path=questions_path)
 
-    retriever = build_retriever(cfg.retrieval, embedder, index, chunks)
-    reranker = (
-        CrossEncoderReranker(cfg.reranker.model_name, cfg.reranker.device)
-        if cfg.reranker.enabled and cfg.reranker.model_name
-        else None
-    )
-    _print_reranker_runtime_state(cfg, reranker)
-    final_top_k = cfg.reranker.final_top_k or cfg.retrieval.top_k
-    generator = build_generator(cfg.generation)
-    writer = ResultWriter(run_dir, save_csv=cfg.runtime.save_csv, logger=logger)
-    existing_ids = writer.load_existing_question_ids() if cfg.runtime.resume else set()
+    run_writer_stage = RunWriterStage(run_dir, save_csv=cfg.runtime.save_csv, logger=logger, resume=cfg.runtime.resume)
+    run_writer_output = run_writer_stage.run()
+    writer = run_writer_output.writer
+    existing_ids = run_writer_output.existing_question_ids
     pending_queries = [query for query in queries if query.question_id not in existing_ids]
 
     attempted = 0
     written = 0
-    retrieval_rows = []
     try:
         print("[8/10] Retrieving contexts")
-        for index, query in enumerate(tqdm(pending_queries, desc="Retrieving contexts", unit="question"), start=1):
-            attempted += 1
-            logger.info(
-                "row_start phase=retrieval question_id=%s row=%s/%s",
-                query.question_id,
-                index,
-                len(pending_queries),
-            )
-            retrieval_start = time.perf_counter()
-            raw_retrieved, retrieved, retrieval_warnings, reranker_used = retrieve_top_k_unique_contexts(
-                query.question,
-                retriever,
-                reranker,
-                final_top_k,
-                cfg.retrieval.fetch_k,
-                max_candidates=len(chunks),
-            )
-            raw_dense_retrieved = _last_candidates(retriever, "last_dense_candidates")
-            raw_bm25_retrieved = _last_candidates(retriever, "last_bm25_candidates")
-            fused_retrieved = _last_candidates(retriever, "last_fused_candidates")
-            retrieval_diagnostics = _retrieval_diagnostics(retriever)
-            retrieval_time_ms = (time.perf_counter() - retrieval_start) * 1000
-            for warning in retrieval_warnings:
-                logger.warning("row_retrieval_warning question_id=%s warning=%s", query.question_id, warning)
-            logger.info(
-                "row_retrieved question_id=%s raw_candidates=%s unique_final_contexts=%s scores=%s retrieval_time_ms=%.2f",
-                query.question_id,
-                len(raw_retrieved),
-                len(retrieved),
-                len([item.score for item in retrieved]),
-                retrieval_time_ms,
-            )
-            retrieval_rows.append(
-                (
-                    query,
-                    raw_retrieved,
-                    raw_dense_retrieved,
-                    raw_bm25_retrieved,
-                    fused_retrieved,
-                    retrieved,
-                    retrieval_time_ms,
-                    reranker_used,
-                    retrieval_warnings,
-                    retrieval_diagnostics,
-                )
-            )
+        retrieval_output = RetrievalStage(
+            cfg,
+            embedder,
+            index,
+            chunks,
+            event_writer=event_writer,
+            logger=logger,
+        ).run(StageInput({"queries": pending_queries}))
+        retriever = retrieval_output.retriever
+        final_top_k = retrieval_output.final_top_k
+        attempted = retrieval_output.attempted
+        retrieval_rows = [row.as_generation_tuple() for row in retrieval_output.retrieval_rows]
 
         print("[9/10] Generating answers")
-        for index, (
-            query,
-            raw_retrieved,
-            raw_dense_retrieved,
-            raw_bm25_retrieved,
-            fused_retrieved,
-            retrieved,
-            retrieval_time_ms,
-            reranker_used,
-            retrieval_warnings,
-            retrieval_diagnostics,
-        ) in enumerate(
-            tqdm(retrieval_rows, desc="Generating answers", unit="question"), start=1
-        ):
-            prompt_contexts = dedupe_prompt_contexts(retrieved)
-            logger.info(
-                "row_start phase=generation question_id=%s row=%s/%s saved_contexts=%s prompt_contexts=%s",
-                query.question_id,
-                index,
-                len(retrieval_rows),
-                len(retrieved),
-                len(prompt_contexts),
+        generation_output = GenerationStage(
+            cfg,
+            retriever,
+            event_writer=event_writer,
+            logger=logger,
+            generator_factory=build_generator,
+        ).run(StageInput({"retrieval_rows": retrieval_output.retrieval_rows, "final_top_k": final_top_k}))
+        for generation_row in generation_output.generation_rows:
+            record = generation_row.output_record
+            output_write_start = time.perf_counter()
+            event_writer.write(
+                stage="output",
+                event_type=EventType.OUTPUT_WRITE_START,
+                message="Output row write started.",
+                question_id=record.question_id,
             )
-            prompt, prompt_stats = build_prompt_with_stats(
-                cfg.generation.system_prompt,
-                query.question,
-                prompt_contexts,
-                include_metadata_headers=cfg.generation.include_metadata_headers,
-                budget=PromptBudget(
-                    max_prompt_tokens=cfg.generation.max_prompt_tokens,
-                    max_context_tokens=cfg.generation.max_context_tokens,
-                    max_chunk_tokens=cfg.generation.max_chunk_tokens,
-                    max_context_chars=cfg.generation.max_context_chars,
-                    max_chunk_chars=cfg.generation.max_chunk_chars,
-                    tokenizer_name=cfg.chunking.tokenizer_name,
-                    context_truncation_strategy=cfg.generation.context_truncation_strategy,
-                ),
+            run_writer_stage.write(record)
+            event_writer.write(
+                stage="output",
+                event_type=EventType.OUTPUT_WRITE_END,
+                message="Output row write completed.",
+                question_id=record.question_id,
+                duration_ms=(time.perf_counter() - output_write_start) * 1000,
+                metrics={"results_jsonl": str(writer.jsonl_path), "save_csv": cfg.runtime.save_csv},
             )
-            if cfg.generation.log_prompt_stats:
-                logger.info("prompt_stats question_id=%s stats=%s", query.question_id, prompt_stats)
-            query_metadata = retriever.extract_query_metadata(query.question) if hasattr(retriever, "extract_query_metadata") else None
-            generation_start = time.perf_counter()
-            error = None
-            try:
-                generation = generator.generate(prompt)
-                answer = generation.answer
-                input_tokens = generation.input_tokens
-                output_tokens = generation.output_tokens
-            except Exception as ex:
-                answer = ""
-                input_tokens = 0
-                output_tokens = 0
-                error = str(ex)
-                logger.exception("row_generation_error question_id=%s error=%s", query.question_id, error)
-            generation_time_ms = (time.perf_counter() - generation_start) * 1000
-            total_tokens = input_tokens + output_tokens
-            cost = (
-                estimate_cost(
-                    input_tokens,
-                    output_tokens,
-                    cfg.telemetry.pricing.input_per_1k_tokens_usd,
-                    cfg.telemetry.pricing.output_per_1k_tokens_usd,
-                )
-                if cfg.telemetry.estimate_cost
-                else 0.0
-            )
-
-            record = OutputRecord(
-                experiment_id=cfg.experiment.experiment_id,
-                question_id=query.question_id,
-                uid=query.question_id,
-                question=query.question,
-                generated_answer=answer,
-                retrieved_chunk_ids=[item.chunk_id for item in retrieved],
-                retrieved_original_context_ids=[item.original_context_id for item in retrieved],
-                raw_retrieved_context_ids=[item.chunk_id for item in raw_retrieved],
-                raw_retrieved_original_context_ids=[item.original_context_id for item in raw_retrieved],
-                raw_dense_retrieved_context_ids=[item.chunk_id for item in raw_dense_retrieved],
-                raw_bm25_retrieved_context_ids=[item.chunk_id for item in raw_bm25_retrieved],
-                retrieved_context_ids=[item.chunk_id for item in retrieved],
-                retrieved_document_ids=[item.metadata.get("doc_id") or item.metadata.get("document_id") or item.original_context_id for item in retrieved],
-                raw_retrieved_document_ids=[
-                    item.metadata.get("doc_id") or item.metadata.get("document_id") or item.original_context_id
-                    for item in raw_retrieved
-                ],
-                retrieved_file_names=[item.metadata.get("file_name") or item.metadata.get("source_file") for item in retrieved],
-                retrieved_files=[item.metadata.get("source_file") or item.metadata.get("file_name") for item in retrieved],
-                raw_retrieved_file_names=[
-                    item.metadata.get("file_name") or item.metadata.get("source_file") for item in raw_retrieved
-                ],
-                citations=_build_citations(retrieved),
-                retrieved_chunk_units=[item.chunk_unit for item in retrieved],
-                retrieved_chunk_texts=[item.text for item in retrieved],
-                retrieved_chunk_metadata=[dict(item.metadata) for item in retrieved],
-                retrieved_context_texts=[item.text for item in retrieved],
-                retrieval_scores=[item.score for item in retrieved],
-                dense_scores=[item.dense_score for item in retrieved],
-                bm25_scores=[item.bm25_score for item in retrieved],
-                rrf_scores=[item.rrf_score for item in retrieved],
-                rerank_scores=[item.rerank_score for item in retrieved],
-                ranking_score_type="rerank_score" if reranker_used else (
-                    retrieved[0].ranking_score_type if retrieved else cfg.retrieval.retriever_type
-                ),
-                retrieval_mode=cfg.retrieval.retriever_type,
-                retrieved_unique_count=len({item.chunk_id for item in retrieved}),
-                raw_retrieved_unique_count=len({item.chunk_id for item in raw_retrieved}),
-                raw_duplicate_rate=_duplicate_rate([item.chunk_id for item in raw_retrieved]),
-                retrieval_warnings=retrieval_warnings,
-                query_metadata={} if query_metadata is None else {
-                    "company_names": sorted(query_metadata.company_names),
-                    "company_symbols": sorted(query_metadata.company_symbols),
-                    "years": sorted(query_metadata.years),
-                    "months": sorted(query_metadata.months),
-                    "year_months": sorted(query_metadata.year_months),
-                    "fiscal_years": sorted(query_metadata.fiscal_years),
-                    "report_periods": sorted(query_metadata.report_periods),
-                    "file_names": sorted(query_metadata.file_names),
-                    "source_datasets": sorted(query_metadata.source_datasets),
-                },
-                retrieval_diagnostics=retrieval_diagnostics,
-                top_k=final_top_k,
-                chunking_strategy=cfg.chunking.strategy,
-                chunk_size=cfg.chunking.chunk_size,
-                chunk_overlap=cfg.chunking.chunk_overlap,
-                embedding_model=cfg.embedding.model_name,
-                retriever_type=cfg.retrieval.retriever_type,
-                reranker_used=reranker_used,
-                llm_model=cfg.generation.model_name,
-                retrieval_time_ms=retrieval_time_ms,
-                generation_time_ms=generation_time_ms,
-                total_latency_ms=retrieval_time_ms + generation_time_ms,
-                latency_ms=retrieval_time_ms + generation_time_ms,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=total_tokens,
-                token_usage={"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": total_tokens},
-                estimated_cost=cost,
-                prompt_template_version=PROMPT_TEMPLATE_VERSION,
-                prompt_stats=prompt_stats,
-                prompt_chars=prompt_stats.get("prompt_chars"),
-                prompt_tokens=prompt_stats.get("prompt_tokens"),
-                context_chars_before=prompt_stats.get("context_chars_before"),
-                context_chars_after=prompt_stats.get("context_chars_after"),
-                context_tokens_before=prompt_stats.get("context_tokens_before"),
-                context_tokens_after=prompt_stats.get("context_tokens_after"),
-                chunks_before=prompt_stats.get("chunks_before"),
-                chunks_after=prompt_stats.get("chunks_after"),
-                chunks_truncated=prompt_stats.get("chunks_truncated"),
-                chunks_dropped=prompt_stats.get("chunks_dropped"),
-                error=error,
-            )
-            writer.write(record)
             written += 1
             logger.info(
                 "row_written question_id=%s answer_chars=%s input_tokens=%s output_tokens=%s total_latency_ms=%.2f error=%s",
-                query.question_id,
-                len(answer),
-                input_tokens,
-                output_tokens,
-                retrieval_time_ms + generation_time_ms,
-                error,
+                record.question_id,
+                len(record.generated_answer),
+                record.input_tokens,
+                record.output_tokens,
+                record.total_latency_ms,
+                record.error,
             )
 
         print("[10/10] Writing outputs")
     finally:
-        writer.close()
+        run_writer_stage.close()
 
     resolved_config = cfg.model_dump()
     resolved_config["generation"]["base_url"] = os.getenv("OLLAMA_BASE_URL", cfg.generation.base_url)
     end_time = time.time()
-    output_counts = _output_row_counts(run_dir)
+    output_counts = RunWriterStage.output_row_counts(run_dir)
     write_manifest(
         run_dir,
         {
@@ -449,6 +351,14 @@ def run_pipeline(config_path: str) -> Path:
             "end_timestamp_utc": _iso_utc(end_time),
         },
     )
+    event_writer.write(
+        stage="pipeline",
+        event_type=EventType.PIPELINE_END,
+        message="Pipeline 1 run completed.",
+        duration_ms=(end_time - start_time) * 1000,
+        metrics={"attempted": attempted, "written": written, **output_counts},
+    )
+    event_writer.close()
     return run_dir
 
 
@@ -754,7 +664,7 @@ def _run_compatibility_payload(
 
 def _prepare_run_dir(run_dir: Path, resume: bool, overwrite: bool) -> None:
     if run_dir.exists() and overwrite:
-        for name in ("results.jsonl", "results.csv", "run_manifest.json", "logs.txt", "pipeline1.log"):
+        for name in ("results.jsonl", "results.csv", "run_manifest.json", "logs.txt", "pipeline1.log", "events.jsonl"):
             path = run_dir / name
             if path.exists():
                 path.unlink()
