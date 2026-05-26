@@ -10,62 +10,66 @@ from src.pipeline2.schemas.eval_config_schema import EvalConfig
 def test_pipeline_configs_load_current_examples():
     p1 = PipelineConfig.from_yaml(
         "configs/pipeline1/experiments/"
-        "01_officeqa_treasury_tableaware512_bge_small_dense_rerank3_qwen25_7b_ctxbudget.yaml"
+        "05_tableaware512_faiss_dense_rerank3_qwen25.yaml"
     )
     p2 = EvalConfig.from_yaml(
         "configs/pipeline2/experiments/"
-        "01_eval_officeqa_treasury_tableaware512_bge_small_dense_rerank3_qwen25_7b_fileeval_ks1_3_5_10_numacc.yaml"
+        "05_eval_tableaware512_faiss_dense_rerank3_qwen25.yaml"
     )
 
-    assert p1.experiment.experiment_id == "01_officeqa_treasury_tableaware512_bge_small_dense_rerank3_qwen25_7b_ctxbudget"
+    assert p1.experiment.experiment_id == "05_tableaware512_faiss_dense_rerank3_qwen25"
+    assert p1.chunking.strategy == "table_aware"
     assert p1.retrieval.top_k == 5
     assert p1.generation.model_name == "qwen2.5:7b"
-    assert p1.runtime.overwrite is False
+    assert p1.runtime.resume is False
+    assert p1.runtime.overwrite is True
     assert p1.embedding.device == "cuda"
     assert p1.embedding.require_cuda is True
     assert p1.reranker.device == "cuda"
     assert (
         p2.evaluation.eval_run_id
-        == "01_eval_officeqa_treasury_tableaware512_bge_small_dense_rerank3_qwen25_7b_fileeval_ks1_3_5_10_numacc"
+        == "05_eval_tableaware512_faiss_dense_rerank3_qwen25"
     )
     assert p2.evaluation.retrieval_eval_field == "retrieved_file_names"
     assert p2.evaluation.max_generation_failure_rate == 0.05
     assert p2.evaluation.strict_failure_threshold is False
     assert p2.retrieval.k == 5
-    assert p2.runtime.overwrite is False
+    assert p2.runtime.overwrite is True
 
 
 def test_elasticsearch_pipeline_configs_load():
     script_score = PipelineConfig.from_yaml(
         "configs/pipeline1/experiments/"
-        "officeqa_treasury_fixed512_bge_small_elastic_script_score_qwen25_7b_ctxbudget.yaml"
+        "07_fixed512_es_dense_script_score_qwen25.yaml"
     )
     knn = PipelineConfig.from_yaml(
         "configs/pipeline1/experiments/"
-        "officeqa_treasury_fixed512_bge_small_elastic_knn_qwen25_7b_ctxbudget.yaml"
+        "06_fixed512_es_dense_knn_qwen25.yaml"
     )
     eval_script_score = EvalConfig.from_yaml(
         "configs/pipeline2/experiments/"
-        "eval_officeqa_treasury_fixed512_bge_small_elastic_script_score_qwen25_7b_fileeval_ks1_3_5_10_numacc.yaml"
+        "07_eval_fixed512_es_dense_script_score_qwen25.yaml"
     )
     eval_knn = EvalConfig.from_yaml(
         "configs/pipeline2/experiments/"
-        "eval_officeqa_treasury_fixed512_bge_small_elastic_knn_qwen25_7b_fileeval_ks1_3_5_10_numacc.yaml"
+        "06_eval_fixed512_es_dense_knn_qwen25.yaml"
     )
 
     assert script_score.index.type == "elasticsearch"
     assert script_score.index.retrieval_mode == "script_score"
     assert script_score.retrieval.retriever_type == "elasticsearch_dense"
     assert script_score.retrieval.fetch_k == 50
+    assert script_score.runtime.resume is False
+    assert script_score.runtime.overwrite is True
     assert knn.index.type == "elasticsearch"
     assert knn.index.retrieval_mode == "knn"
     assert knn.index.num_candidates == 100
     assert knn.retrieval.retriever_type == "elasticsearch_dense"
     assert eval_script_score.inputs.rag_outputs == [
-        "data/runs/pipeline1/officeqa_treasury_fixed512_bge_small_elastic_script_score_qwen25_7b_ctxbudget/results.jsonl"
+        "data/runs/pipeline1/07_fixed512_es_dense_script_score_qwen25/results.jsonl"
     ]
     assert eval_knn.inputs.rag_outputs == [
-        "data/runs/pipeline1/officeqa_treasury_fixed512_bge_small_elastic_knn_qwen25_7b_ctxbudget/results.jsonl"
+        "data/runs/pipeline1/06_fixed512_es_dense_knn_qwen25/results.jsonl"
     ]
     assert eval_script_score.retrieval.ks == [1, 3, 5, 10]
     assert eval_knn.retrieval.ks == [1, 3, 5, 10]

@@ -2,6 +2,7 @@ import pytest
 
 from src.pipeline1.orchestrator import retrieve_top_k_unique_contexts
 from src.pipeline1.retrieval.bm25_retriever import BM25Retriever
+from src.pipeline1.retrieval.dense_retriever import DenseRetriever
 from src.pipeline1.retrieval.factory import build_retriever
 from src.pipeline1.retrieval.hybrid_rrf_retriever import HybridRRFRetriever
 from src.pipeline1.schemas.chunk import ChunkRecord
@@ -113,6 +114,33 @@ def test_dense_old_configs_still_validate_and_build():
     retriever = build_retriever(cfg.retrieval, _FakeEmbedder(), _FakeIndex(), [_chunk("c1", "alpha")])
 
     assert retriever.__class__.__name__ == "DenseRetriever"
+
+
+def test_faiss_hybrid_uses_standard_dense_leg():
+    cfg = PipelineConfig.model_validate(
+        {
+            "experiment": {"experiment_id": "exp", "output_dir": "runs"},
+            "data": {"documents_path": "documents.jsonl", "questions_path": "questions.jsonl"},
+            "chunking": {"strategy": "fixed_word", "chunk_size": 10, "chunk_overlap": 0},
+            "embedding": {"provider": "sentence_transformers", "model_name": "fake"},
+            "index": {"type": "faiss", "metric": "cosine"},
+            "retrieval": {
+                "retriever_type": "hybrid_rrf",
+                "top_k": 2,
+                "fetch_k": 5,
+                "bm25": {"backend": "local"},
+            },
+            "reranker": {"enabled": False},
+            "generation": {"provider": "ollama", "model_name": "fake", "system_prompt": "Use context."},
+            "telemetry": {},
+            "runtime": {},
+        }
+    )
+
+    retriever = build_retriever(cfg.retrieval, _FakeEmbedder(), _FakeIndex(), [_chunk("c1", "alpha")])
+
+    assert isinstance(retriever, HybridRRFRetriever)
+    assert isinstance(retriever.dense_retriever, DenseRetriever)
 
 
 def test_legacy_placeholder_hybrid_value_is_rejected():

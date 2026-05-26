@@ -1,16 +1,13 @@
-# Experiment 01: fixed512 dense no-rerank fetch50
 extends: "../base.yaml"
 
 experiment:
-  experiment_id: "01_officeqa_treasury_fixed512_dense_norerank_fetch50_qwen25_7b_ctxbudget"
+  experiment_id: "10_fixed512_es_hybrid_rrf_dateaware_llama3"
   random_seed: 42
   output_dir: "data/runs/pipeline1"
 
 documents:
-  source_type: "txt_folder"
-  path: "data/raw/transformed"
-  file_glob: "*.txt"
-  recursive: true
+  source_type: "jsonl"
+  path: "data/raw/treasury_bulletins_1939_1963.jsonl"
   text_field: "cleaned_context"
 
 data:
@@ -27,11 +24,6 @@ chunking:
   chunk_size: 512
   chunk_overlap: 64
   tokenizer_name: "cl100k_base"
-  allow_word_fallback: false
-  max_chunk_chars: 8000
-  max_chunk_tokens: 1800
-  oversized_chunk_policy: "split"
-  oversized_chunk_warning: true
 
 embedding:
   provider: "sentence_transformers"
@@ -42,16 +34,35 @@ embedding:
   require_cuda: true
 
 index:
-  type: "faiss"
-  metric: "cosine"
+  type: "elasticsearch"
+  host: "http://localhost:9201"
+  index_name: "ragbench_10_fixed512_es_hybrid_rrf_dateaware_llama3_dense"
+  dense_dim: 384
+  vector_field: "embedding"
+  text_field: "text"
+  similarity: "cosine"
+  recreate: true
+  retrieval_mode: "knn"
+  num_candidates: 200
+  shards: 1
+  replicas: 0
+  refresh_after_index: true
+  request_timeout: 60
+  verify_certs: false
+  username: null
+  password: null
+  api_key: null
 
 retrieval:
-  retriever_type: "dense"
+  retriever_type: "hybrid_rrf"
   top_k: 10
-  fetch_k: 50
+  fetch_k: 200
   bm25:
-    enabled: true
-    backend: "local"
+    backend: "elasticsearch"
+    host: "http://localhost:9201"
+    index_name: "ragbench_10_fixed512_es_hybrid_rrf_dateaware_llama3_bm25"
+    rebuild_index: true
+    allow_fallback: false
     k1: 1.5
     b: 0.75
   hybrid:
@@ -59,36 +70,33 @@ retrieval:
     dense_weight: 1.0
     bm25_weight: 1.0
   metadata_boosting:
-    enabled: false
-    company_weight: 0.3
-    year_weight: 0.15
-    symbol_weight: 0.2
+    enabled: true
+    company_weight: 0.0
+    year_weight: 5.0
+    month_weight: 3.0
+    year_month_weight: 10.0
+    wrong_year_penalty: -3.0
+    symbol_weight: 0.0
     file_name_weight: 0.0
   metadata_filtering:
-    enabled: false
+    enabled: true
     strict: false
+    strict_year_match: false
+    strict_year_month_match: false
 
 reranker:
   enabled: false
-  model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
-  device: "cuda"
-  final_top_k: 10
+  model_name: null
+  device: "cpu"
 
 generation:
   provider: "ollama"
-  model_name: "qwen2.5:7b"
+  model_name: "llama3:latest"
   base_url: "http://localhost:11434"
   temperature: 0.0
   max_tokens: 64
   timeout_s: 180
   include_metadata_headers: true
-  max_prompt_tokens: 8192
-  max_context_tokens: 6000
-  max_chunk_tokens: 1800
-  max_context_chars: 24000
-  max_chunk_chars: 8000
-  context_truncation_strategy: "ranked_budget"
-  log_prompt_stats: true
   system_prompt: |
     You are a financial question-answering system.
 
@@ -103,15 +111,10 @@ generation:
     - Compute from the retrieved evidence when needed.
     - If the required evidence is missing, return EXACTLY: UNKNOWN
 
-telemetry:
-  estimate_cost: true
-  pricing:
-    input_per_1k_tokens_usd: 0.0
-    output_per_1k_tokens_usd: 0.0
-
 runtime:
   save_csv: true
   log_level: "INFO"
-  resume: true
-  overwrite: false
+  resume: false
+  overwrite: true
   cache_mismatch_policy: "raise"
+

@@ -20,14 +20,7 @@ def build_retriever(config: RetrievalConfig, embedder, index, chunks):
             metadata_filtering=config.metadata_filtering,
         )
 
-    dense_retriever = DenseRetriever(
-        embedder=embedder,
-        index=index,
-        chunks=chunks,
-        fetch_k=config.fetch_k,
-        metadata_boosting=config.metadata_boosting,
-        metadata_filtering=config.metadata_filtering,
-    )
+    dense_retriever = _build_dense_retriever(config, embedder, index, chunks)
     if config.retriever_type == "hybrid_rrf":
         return HybridRRFRetriever(
             dense_retriever=dense_retriever,
@@ -38,6 +31,27 @@ def build_retriever(config: RetrievalConfig, embedder, index, chunks):
             bm25_weight=config.hybrid.bm25_weight,
         )
     return dense_retriever
+
+
+def _build_dense_retriever(config: RetrievalConfig, embedder, index, chunks):
+    if getattr(index, "uses_external_storage", False):
+        return ElasticsearchDenseRetriever(
+            embedder=embedder,
+            index=index,
+            chunks=chunks,
+            top_k=config.top_k,
+            fetch_k=config.fetch_k,
+            metadata_boosting=config.metadata_boosting,
+            metadata_filtering=config.metadata_filtering,
+        )
+    return DenseRetriever(
+        embedder=embedder,
+        index=index,
+        chunks=chunks,
+        fetch_k=config.fetch_k,
+        metadata_boosting=config.metadata_boosting,
+        metadata_filtering=config.metadata_filtering,
+    )
 
 
 def _build_bm25_retriever(config: RetrievalConfig, chunks):

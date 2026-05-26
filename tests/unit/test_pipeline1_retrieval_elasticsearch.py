@@ -295,10 +295,77 @@ def test_factories_build_elasticsearch_dense_backend(monkeypatch):
     assert index == "es-index"
     assert kwargs["dense_dim"] == 3
 
-    cfg = _cfg(retrieval={"type": "elasticsearch_dense", "top_k": 1, "fetch_k": 2})
+    cfg = _cfg(
+        index={"type": "elasticsearch", "dense_dim": 3},
+        retrieval={"type": "elasticsearch_dense", "top_k": 1, "fetch_k": 2},
+    )
     retriever = build_retriever(cfg.retrieval, _VectorEmbedder(), _DenseIndex(), [_chunk("c1", "alpha")])
 
     assert isinstance(retriever, ElasticsearchDenseRetriever)
+
+
+def test_factory_builds_elasticsearch_hybrid_dense_leg():
+    cfg = _cfg(
+        index={"type": "elasticsearch", "dense_dim": 3},
+        retrieval={
+            "retriever_type": "hybrid_rrf",
+            "top_k": 2,
+            "fetch_k": 5,
+            "bm25": {"backend": "local"},
+        },
+    )
+    index = _DenseIndex()
+    index.uses_external_storage = True
+
+    retriever = build_retriever(cfg.retrieval, _VectorEmbedder(), index, [_chunk("c1", "alpha")])
+
+    assert isinstance(retriever, HybridRRFRetriever)
+    assert isinstance(retriever.dense_retriever, ElasticsearchDenseRetriever)
+    assert retriever.bm25_retriever.__class__.__name__ == "BM25Retriever"
+
+
+def test_elasticsearch_hybrid_retrieves_with_compatible_result_objects():
+    cfg = _cfg(
+        index={"type": "elasticsearch", "dense_dim": 3},
+        retrieval={
+            "retriever_type": "hybrid_rrf",
+            "top_k": 2,
+            "fetch_k": 5,
+            "bm25": {"backend": "local"},
+        },
+    )
+    index = _DenseIndex()
+    index.uses_external_storage = True
+
+    retriever = build_retriever(
+        cfg.retrieval,
+        _VectorEmbedder(),
+        index,
+        [_chunk("c1", "alpha text"), _chunk("c2", "beta text")],
+    )
+
+    rows = retriever.retrieve("alpha", top_k=2)
+
+    assert rows[0].chunk_id == "c1"
+    assert rows[0].dense_score == pytest.approx(0.75)
+    assert rows[0].rrf_score is not None
+    assert rows[0].retrieval_source == "hybrid_rrf"
+
+
+def test_invalid_faiss_elasticsearch_dense_combination_fails_clearly():
+    with pytest.raises(ValueError, match="index.type='faiss'.*elasticsearch_dense"):
+        _cfg(
+            index={"type": "faiss", "metric": "cosine"},
+            retrieval={"retriever_type": "elasticsearch_dense", "top_k": 1, "fetch_k": 2},
+        )
+
+
+def test_invalid_elasticsearch_dense_alias_fails_clearly():
+    with pytest.raises(ValueError, match="index.type='elasticsearch'.*retrieval.retriever_type='dense'"):
+        _cfg(
+            index={"type": "elasticsearch", "dense_dim": 3},
+            retrieval={"retriever_type": "dense", "top_k": 1, "fetch_k": 2},
+        )
 
 
 class _Indices:

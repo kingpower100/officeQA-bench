@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.pipeline1.config_loader import load_pipeline_config_payload
 
@@ -192,6 +192,24 @@ class PipelineConfig(StrictConfigModel):
     generation: GenerationConfig
     telemetry: TelemetryConfig
     runtime: RuntimeConfig
+
+    @model_validator(mode="after")
+    def validate_index_retriever_compatibility(self) -> "PipelineConfig":
+        retriever_type = self.retrieval.retriever_type
+        index_type = self.index.type
+        if index_type == "faiss" and retriever_type == "elasticsearch_dense":
+            raise ValueError(
+                "Unsupported index/retriever combination: index.type='faiss' cannot be used with "
+                "retrieval.retriever_type='elasticsearch_dense'. Use retrieval.retriever_type='dense' "
+                "or set index.type='elasticsearch'."
+            )
+        if index_type == "elasticsearch" and retriever_type == "dense":
+            raise ValueError(
+                "Unsupported index/retriever combination: index.type='elasticsearch' cannot be used with "
+                "retrieval.retriever_type='dense'. Use retrieval.retriever_type='elasticsearch_dense' "
+                "or 'hybrid_rrf'."
+            )
+        return self
 
     @classmethod
     def from_yaml(cls, path: str) -> "PipelineConfig":

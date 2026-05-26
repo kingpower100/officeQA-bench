@@ -60,7 +60,7 @@ def test_retrieval_stage_reranker_enabled_path_still_works():
 
 
 def test_retrieval_stage_elasticsearch_dense_retriever_works():
-    cfg = _cfg(retriever_type="elasticsearch_dense", top_k=1, fetch_k=2)
+    cfg = _cfg(retriever_type="elasticsearch_dense", index_type="elasticsearch", top_k=1, fetch_k=2)
     chunks = [_chunk("c1", "alpha")]
 
     output = RetrievalStage(cfg, _Embedder(), _ElasticsearchDenseIndex(), chunks).run(
@@ -133,6 +133,7 @@ def _chunk(chunk_id: str, text: str):
 
 def _cfg(
     retriever_type: str = "dense",
+    index_type: str = "faiss",
     top_k: int = 1,
     fetch_k: int = 2,
     reranker_enabled: bool = False,
@@ -144,7 +145,7 @@ def _cfg(
             "data": {"documents_path": "documents.jsonl", "questions_path": "questions.jsonl"},
             "chunking": {"strategy": "fixed_word", "chunk_size": 10, "chunk_overlap": 0},
             "embedding": {"provider": "sentence_transformers", "model_name": "fake"},
-            "index": {"type": "faiss", "metric": "cosine"},
+            "index": {"type": index_type, "metric": "cosine"},
             "retrieval": {"retriever_type": retriever_type, "top_k": top_k, "fetch_k": fetch_k},
             "reranker": {
                 "enabled": reranker_enabled,
